@@ -64,16 +64,18 @@ def login():
   except requests.exceptions.RequestException as e:
       print(f"An error occurred: {e}")
 
-def check_answer(q_id:str):
+def check_answer(GRADER_URL:str, q_id:str, course_id:str, notebook_id:str, encoded_link:str = None):
 
   prompt = form_prompt(q_id)
   payload = {
     "query": prompt,
     "course_name":course_id,
     "notebook_name": notebook_id,
-    "q_name":q_id,
-    "url" : encoded_link
+    "q_name":q_id
   }
+  if encoded_link is not None:
+    payload['url'] = encoded_link
+
   if GRADER_URL is None:
     display(Markdown(prompt))
     print("Sorry CP220-2025 Grader is not available yet")
@@ -110,11 +112,11 @@ def show_login_button ():
   display(button)
 
 # @title Check Answer
-def show_teaching_assist_button(q_id:str):
+def show_teaching_assist_button(GRADER_URL:str, q_id:str, course_id:str, notebook_id:str, rubric_link:str=None):
     clear_output()
     # Create a button
     button = Button(description=f"Check my answer to question {q_id}!", button_style='info', layout=Layout(width='auto'))
     # Attach the function to the button's click event
-    button.on_click(lambda b:check_answer(q_id))
+    button.on_click(lambda b:check_answer(GRADER_URL, q_id, course_id, notebook_id, rubric_link))
     # Display the button in the notebook
     display(button)
