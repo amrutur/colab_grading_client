@@ -103,7 +103,19 @@ def get_cells_to_evaluate():
     print(i, cell['source'])
 
 
-def form_prompt(qnum:str):
+def form_prompt(q_id:str):
+  '''
+  Form the prompt for LLM by extracting the 
+  question from the cell containing q_id
+  and the answer from the cell after it
+  '''
+  qpat = "[qQ](\d+)"
+  qmat=re.search(qpat,q_id)
+  if qmat is not None:
+    qnum = int(qmat.group(1))
+  else:
+    print(f"Invalid format for question id {q_id}")
+    return
   sentences,_ = get_question_cell(qnum)
   question = "The assignment question is: "+" ".join(sentences)+"\n"
   sentences,_ = get_answer_cell(qnum)
@@ -128,12 +140,17 @@ def login():
 def ask_assist(GRADER_URL:str, q_id:str,rubric_link:str = None):
 
   prompt = form_prompt(q_id)
+
   payload = {
     "query": prompt,
-    "q_id":q_id,
-    "user_name": user_name,
-    "user_email":user_email
+    "q_id":q_id
   }
+  if 'user_name' in globals(): #variable has been set
+    payload['user_name'] = user_name
+
+  if 'user_email' in globals(): #variable has been set
+    payload['user_email'] = user_email
+   
   if rubric_link is not None:
     payload['rubric_link'] = rubric_link
 
@@ -188,19 +205,19 @@ def check_answer(GRADER_URL:str, q_id:str, course_id:str, notebook_id:str, rubri
   except requests.exceptions.RequestException as e:
     print(f"An error occurred: {e}")
 
-def submit_eval(GRADER_URL:str, user_name:str, user_email:str, rubric_link:str = None):
+def submit_eval(GRADER_URL:str, user_name:str, user_email:str, course_id: str=None, notebook_id: str=None,rubric_link:str = None):
 
   answer_notebook = _message.blocking_request('get_ipynb')
   #answer_notebook = nb['ipynb']['cells']
   answer_hash = calculate_json_md5(answer_notebook)
-  answer_notebook_string = json.dumps(answer_notebook)
+  #answer_notebook_string = json.dumps(answer_notebook)
 
   payload = {
     "course_id": course_id,
     "user_name": user_name,
     "user_email":user_email,
     "notebook_id": notebook_id,
-    "answer_notebook": answer_notebook_string,
+    "answer_notebook": answer_notebook,
     "answer_hash":answer_hash,
     "rubric_link":rubric_link
   }
@@ -280,7 +297,7 @@ def get_file_id_from_share_link(share_link: str) -> str or None:
             d_index = parts.index('drive')
         else:
             raise IndexError
-        
+
         # The file ID is usually the next part after 'd'
         file_id = parts[d_index + 1]
         subparts = file_id.split('?')
@@ -296,91 +313,36 @@ def get_file_id_from_share_link(share_link: str) -> str or None:
     except IndexError:
         print("Could not extract file ID from the share link.")
         return None
-  
-
-def download_colab_notebook_old(notebook_url):
-    """
-    Download a Google Colab notebook as JSON/ipynb file.
-    
-    Args:
-        notebook_url: URL of the Colab notebook (either direct link or sharing link)
-        output_filename: Name for the downloaded file (default: 'notebook.ipynb')
-    
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        # Extract the file ID from various URL formats
-        if '/drive/' in notebook_url:
-            # Format: https://colab.research.google.com/drive/FILE_ID
-            file_id = notebook_url.split('/drive/')[1].split('?')[0].split('#')[0]
-        elif 'id=' in notebook_url:
-            # Format: https://colab.research.google.com/notebook#fileId=FILE_ID
-            file_id = notebook_url.split('id=')[1].split('&')[0].split('#')[0]
-        else:
-            print("Could not extract file ID from URL")
-            return False
-        
-        # Construct the download URL
-        download_url = f'https://drive.google.com/uc?export=download&id={file_id}'
-        
-        # Download the file
-        response = requests.get(download_url)
-        print(response.text)
-        if response.status_code == 200:
-            # Save the notebook
-            #with open(output_filename, 'w', encoding='utf-8') as f:
-            #    f.write(response.text)
-            
-            #print(f"✓ Notebook downloaded successfully as '{output_filename}'")
-            
-            # Verify it's valid JSON
-            try:
-                notebook_json = json.loads(response.text)
-                #print(f"✓ Notebook contains {len(notebook_json.get('cells', []))} cells")
-                return notebook_json
-            except json.JSONDecodeError:
-                print("⚠ Warning: Downloaded file may not be valid JSON")
-                #print(response.text)
-                return
-        else:
-            print(f"✗ Failed to download. Status code: {response.status_code}")
-            print("Make sure the notebook is shared with 'Anyone with the link can view'")
-            return
-            
-    except Exception as e:
-        print(f"✗ Error: {str(e)}")
-        return
 
 def download_colab_notebook(notebook_url):
     """Download a Colab notebook as JSON"""
     # Authenticate
     auth.authenticate_user()
-    
+
     # Build service
     drive_service = build('drive', 'v3')
-    
+
     file_id=get_file_id_from_share_link(notebook_url)
 
     # Download file
     request = drive_service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
-    
+
     done = False
     while not done:
         status, done = downloader.next_chunk()
         print(f"Download {int(status.progress() * 100)}%")
-    
+
     # Parse JSON
     fh.seek(0)
     notebook_json = json.loads(fh.read().decode('utf-8'))
-    
+
     return notebook_json
 
 
 def get_user_info(nb):
-  ''' 
+  '''
   Extract user_name and user_email from the notebook.
   This is in the first code cell
   '''
@@ -400,7 +362,7 @@ def get_user_info(nb):
         user_name = mat.group(1)
         user_email = mat.group(2)
         #found in this code cell. So exit the for loop
-        break 
+        break
     cell_no += 1
   return user_name, user_email
 
@@ -413,11 +375,11 @@ def submit_nb_eval(notebook_url, GRADER_URL, rubric_link, course_id, notebook_id
   if answer_notebook is None:
     print("Cant access notebook")
     return False
-    
+
 
   user_name, user_email = get_user_info(answer_notebook)
   answer_hash = calculate_json_md5(answer_notebook)
-  
+
 
   payload = {
     "course_id": course_id,
