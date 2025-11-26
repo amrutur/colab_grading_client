@@ -265,12 +265,12 @@ def show_teaching_assist_button(GRADER_URL:str, q_id:str,rubric_link:str=None):
     # Display the button in the notebook
     display(button)
 
-def show_submit_eval_button(GRADER_URL:str, user_name:str, user_email:str, rubric_link:str=None):
+def show_submit_eval_button(GRADER_URL:str, user_name:str, user_email:str, course_id: str=None, notebook_id: str=None, rubric_link:str=None):
     clear_output()
     # Create a button
     button = Button(description=f"Submit my notebook!", button_style='info', layout=Layout(width='auto'))
     # Attach the function to the button's click event
-    button.on_click(lambda b:submit_eval(GRADER_URL, user_name, user_email, rubric_link))
+    button.on_click(lambda b:submit_eval(GRADER_URL, user_name, user_email, course_id, notebook_id, rubric_link))
     # Display the button in the notebook
     display(button)
 

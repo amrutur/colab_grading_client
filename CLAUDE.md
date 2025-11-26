@@ -83,7 +83,7 @@ Interactive buttons for Colab notebooks:
 
 - **`show_login_button()`** - Displays login button
 - **`show_teaching_assist_button(GRADER_URL, q_id, rubric_link)`** - Button to get help
-- **`show_submit_eval_button(GRADER_URL, user_name, user_email, rubric_link)`** - Button to submit
+- **`show_submit_eval_button(GRADER_URL, user_name, user_email, course_id, notebook_id, rubric_link)`** - Button to submit
 
 ### 6. Utility Functions
 
