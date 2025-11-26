@@ -208,7 +208,7 @@ def check_answer(GRADER_URL:str, q_id:str, course_id:str, notebook_id:str, rubri
   except requests.exceptions.RequestException as e:
     print(f"An error occurred: {e}")
 
-def submit_eval(GRADER_URL:str, user_name:str, user_email:str, course_id: str=None, notebook_id: str=None,rubric_link:str = None):
+def submit_eval(GRADER_URL:str, user_name:str, user_email:str, course_id: str=None, notebook_id: str=None,rubric_link:str = None, WAIT_TIME:float = 2.0):
 
   answer_notebook = _message.blocking_request('get_ipynb')
   #answer_notebook = nb['ipynb']['cells']
@@ -230,7 +230,8 @@ def submit_eval(GRADER_URL:str, user_name:str, user_email:str, course_id: str=No
     print("Sorry Teaching Assistant is not available yet. Try again later")
     return
   try:
-      response = requests.post(GRADER_URL+"eval",json=payload)
+      print("Please wait, submitting to the grader...")
+      response = requests.post(GRADER_URL+"eval",json=payload, timeout=WAIT_TIME*60)
 
       if response.status_code == 200:
         data = response.json()
@@ -240,6 +241,8 @@ def submit_eval(GRADER_URL:str, user_name:str, user_email:str, course_id: str=No
         print(f"Call to Assistant failed with status code: {response.status_code}")
         print("Error message:", response.text)
 
+  except requests.exceptions.Timeout:
+    print(f"The teaching assistant is taking too long. Please retry after some time.")
   except requests.exceptions.RequestException as e:
     print(f"An error occurred: {e}")
 
@@ -268,12 +271,12 @@ def show_teaching_assist_button(GRADER_URL:str, q_id:str,rubric_link:str=None, W
     # Display the button in the notebook
     display(button)
 
-def show_submit_eval_button(GRADER_URL:str, user_name:str, user_email:str, course_id: str=None, notebook_id: str=None, rubric_link:str=None):
+def show_submit_eval_button(GRADER_URL:str, user_name:str, user_email:str, course_id: str=None, notebook_id: str=None, rubric_link:str=None, WAIT_TIME:float = 2.0):
     clear_output()
     # Create a button
     button = Button(description=f"Submit my notebook!", button_style='info', layout=Layout(width='auto'))
     # Attach the function to the button's click event
-    button.on_click(lambda b:submit_eval(GRADER_URL, user_name, user_email, course_id, notebook_id, rubric_link))
+    button.on_click(lambda b:submit_eval(GRADER_URL, user_name, user_email, course_id, notebook_id, rubric_link, WAIT_TIME))
     # Display the button in the notebook
     display(button)
 

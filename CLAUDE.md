@@ -54,7 +54,7 @@ Functions that students call from their notebooks:
 - **`login()`** - Displays login interface (HTML response from server)
 - **`ask_assist(GRADER_URL, q_id, rubric_link, WAIT_TIME)`** - Get help on a specific question (WAIT_TIME in minutes, default 2.0)
 - **`check_answer(GRADER_URL, q_id, course_id, notebook_id, rubric_link)`** - DEPRECATED, use `ask_assist`
-- **`submit_eval(GRADER_URL, user_name, user_email, course_id, notebook_id, rubric_link)`** - Submit notebook for grading
+- **`submit_eval(GRADER_URL, user_name, user_email, course_id, notebook_id, rubric_link, WAIT_TIME)`** - Submit notebook for grading (WAIT_TIME in minutes, default 2.0)
 
 ### 3. Instructor/Admin Functions
 
@@ -83,7 +83,7 @@ Interactive buttons for Colab notebooks:
 
 - **`show_login_button()`** - Displays login button
 - **`show_teaching_assist_button(GRADER_URL, q_id, rubric_link, WAIT_TIME)`** - Button to get help (WAIT_TIME in minutes, default 2.0)
-- **`show_submit_eval_button(GRADER_URL, user_name, user_email, course_id, notebook_id, rubric_link)`** - Button to submit
+- **`show_submit_eval_button(GRADER_URL, user_name, user_email, course_id, notebook_id, rubric_link, WAIT_TIME)`** - Button to submit (WAIT_TIME in minutes, default 2.0)
 
 ### 6. Utility Functions
 
@@ -152,8 +152,9 @@ from ipywidgets import Button, Layout
 - Try-except blocks for all network requests
 - Graceful degradation with user-friendly error messages
 - Prints errors to console rather than raising exceptions
-- Timeout handling: `ask_assist` includes a configurable timeout (WAIT_TIME in minutes, default 2.0) that prevents indefinite hanging
+- Timeout handling: `ask_assist` and `submit_eval` include a configurable timeout (WAIT_TIME in minutes, default 2.0) that prevents indefinite hanging
 - Timeout exceptions caught separately with user-friendly message: "The teaching assistant is taking too long. Please retry after some time."
+- User feedback messages displayed before requests: "Please wait, asking the grader..." or "Please wait, submitting to the grader..."
 
 ### 3. Display Patterns
 
