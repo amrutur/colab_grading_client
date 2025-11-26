@@ -137,7 +137,7 @@ def login():
   except requests.exceptions.RequestException as e:
       print(f"An error occurred: {e}")
 
-def ask_assist(GRADER_URL:str, q_id:str,rubric_link:str = None):
+def ask_assist(GRADER_URL:str, q_id:str,rubric_link:str = None, WAIT_TIME:float = 2.0):
 
   prompt = form_prompt(q_id)
 
@@ -150,7 +150,7 @@ def ask_assist(GRADER_URL:str, q_id:str,rubric_link:str = None):
 
   if 'user_email' in globals(): #variable has been set
     payload['user_email'] = user_email
-   
+
   if rubric_link is not None:
     payload['rubric_link'] = rubric_link
 
@@ -159,7 +159,8 @@ def ask_assist(GRADER_URL:str, q_id:str,rubric_link:str = None):
     print("Sorry Teaching Assistant is not available yet")
     return
   try:
-      response = requests.post(GRADER_URL+"assist",json=payload)
+      print("Please wait, asking the grader...")
+      response = requests.post(GRADER_URL+"assist",json=payload, timeout=WAIT_TIME*60)
 
       if response.status_code == 200:
         data = response.json()
@@ -169,6 +170,8 @@ def ask_assist(GRADER_URL:str, q_id:str,rubric_link:str = None):
         print(f"Call to assistant failed with status code: {response.status_code}")
         print("Error message:", response.text)
 
+  except requests.exceptions.Timeout:
+    print(f"The teaching assistant is taking too long. Please retry after some time.")
   except requests.exceptions.RequestException as e:
     print(f"An error occurred: {e}")
 
@@ -256,12 +259,12 @@ def show_login_button ():
   # Display the button in the notebook
   display(button)
 
-def show_teaching_assist_button(GRADER_URL:str, q_id:str,rubric_link:str=None):
+def show_teaching_assist_button(GRADER_URL:str, q_id:str,rubric_link:str=None, WAIT_TIME:float = 2.0):
     clear_output()
     # Create a button
     button = Button(description=f"Check/Help with question {q_id}!", button_style='info', layout=Layout(width='auto'))
     # Attach the function to the button's click event
-    button.on_click(lambda b:ask_assist(GRADER_URL, q_id, rubric_link))
+    button.on_click(lambda b:ask_assist(GRADER_URL, q_id, rubric_link, WAIT_TIME))
     # Display the button in the notebook
     display(button)
 
