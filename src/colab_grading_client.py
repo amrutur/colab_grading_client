@@ -106,10 +106,10 @@ def get_cell_output(cell):
         cell_output['error'] += "Code Error:\n"
         cell_output['error'] += f"{output.ename}:{output.evalue}"+"\ntraceback="+''.join(output["traceback"])
     elif output["output_type"] == "execute_result":
-      if 'text/plain' in output.get('data',{}):
+      if 'text/plain' in output.get(')data',{}):
         if 'text' not in cell_output:
           cell_output['text'] = "Code Output:\n"
-        cell_output += ''.join(output["data"]["text/plain"])
+        cell_output['text'] += ''.join(output["data"]["text/plain"])
       elif 'image/png' in output.get('data',{}):
         cell_output['inline_data'] = {'mime_type':'image/png',\
                                     'data': output["data"]["image/png"]}
