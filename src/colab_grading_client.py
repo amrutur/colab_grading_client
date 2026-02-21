@@ -24,259 +24,386 @@ import re
 from google.colab import auth
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-import json
 import io
 
+from google.auth.transport.requests import Request
+import google.auth
 
-def calculate_json_md5(data: Dict[str, Any]) -> str:
-    """
-    Calculates the MD5 hash of a JSON-compatible Python dictionary.
+from google.genai import types
 
-    Crucially, this function serializes the dictionary in a deterministic
-    way (sorted keys, no separators, no whitespace) to ensure the hash
-    is the same every time, regardless of Python version or runtime.
+import random
+import string
 
-    Args:
-        data (Dict[str, Any]): The JSON-compatible Python dictionary.
-
-    Returns:
-        str: The hexadecimal MD5 hash string.
-    """
-
-    # 1. Serialize the data into a canonical JSON string
-    #    - sort_keys=True: Ensures keys are ordered alphabetically.
-    #    - separators=(',', ':'): Removes extra whitespace/indentation.
-    #    - ensure_ascii=True: Ensures consistency in string representation.
-    try:
-        json_string = json.dumps(
-            data,
-            sort_keys=True,
-            separators=(',', ':'),
-            ensure_ascii=True
-        )
-    except TypeError as e:
-        # Handle cases where the dictionary contains non-serializable objects (like objects or functions)
-        print(f"Error serializing JSON data: {e}")
-        return ""
-
-    # 2. Encode the string to bytes (MD5 works on bytes, not strings)
-    #    - Using 'utf-8' is standard for consistent hashing.
-    data_bytes = json_string.encode('utf-8')
-
-    # 3. Calculate the MD5 hash
-    md5_hash = hashlib.md5(data_bytes).hexdigest()
-
-    return md5_hash
-
-def get_cell_idx(cells,qnum:int):
-  ''' returns the first cell index that has the string qnum contained in it'''
-  qpat = r"\*\*Q"+f"{qnum}"+"\*\*"
-  for i,cell in enumerate(cells):
-    for _,ele in enumerate(cell['source']):
-      if re.search(qpat,ele):
-        return i
-
-def get_question_cell(qnum:int):
-  '''get the contents of the question cell corresponding to the question qnum.
-  return cell content of the cell and the cell type (code, markdown, raw)
+def generate_random_string(l:int)->str:
+  '''Generate random string of length l
+  using lower case ascii a-z and digits 0-9
   '''
+  # Define the pool of characters for the random part
+  random_chars = string.ascii_lowercase + string.digits # a-z and 0-9
+
+  result_string = ''
+
+  # Append 3 random characters from the pool
+  for _ in range(l):
+    result_string += random.choice(random_chars)
+  
+  return result_string
+
+
+def authenticate():
+  # One-click Google auth (student clicks "Allow")
+  auth.authenticate_user()
+  creds, _ = google.auth.default()
+  creds.refresh(Request())
+
+  # Exchange Google token for app JWT
+  resp = requests.post(f"{AI_TA_URL}/colab_auth", json={
+    "google_token": creds.token,
+    "course_id": course_id
+  })
+
+  resp.raise_for_status()
+  TOKEN = resp.json()["token"]
+  print(f"Authenticated {resp.json()['user']['name']}as: {resp.json()['user']['gmail']}")
+ 
+  # Create authenticated session for all subsequent API calls
+  session = requests.Session()
+  session.headers.update({"Authorization": f"Bearer {TOKEN}"})
+  return session
+
+def get_cell_output(cell):
+  '''
+  get the output of the cell and return as a json object.
+  cell_output['text'] has a single string that concatenates all textlines in cell's output
+  cell_output['inline_data']={'mime_type':mime_type,'data':data}
+
+
+  Currently only mime_types of image/png and image/jpeg are supported
+  '''
+
+  cell_output  = {}
+
+  if 'outputs' not in cell:
+    #no output
+    return cell_output
+
+  for output in cell["outputs"]:
+    if output["output_type"] == "stream":
+      if 'text' not in cell_output:
+        cell_output['text'] = "Code Output:\n"
+      cell_output['text'] += ''.join(output["text"])
+    elif output["output_type"] == "error":
+      if 'error' in cell_output:
+        cell_output['error'] += "Code Error:\n"
+        cell_output['error'] += f"{output.ename}:{output.evalue}"+"\ntraceback="+''.join(output["traceback"])
+    elif output["output_type"] == "execute_result":
+      if 'text/plain' in output.get('data',{}):
+        if 'text' not in cell_output:
+          cell_output['text'] = "Code Output:\n"
+        cell_output += ''.join(output["data"]["text/plain"])
+      elif 'image/png' in output.get('data',{}):
+        cell_output['inline_data'] = {'mime_type':'image/png',\
+                                    'data': output["data"]["image/png"]}
+      elif 'image/jpeg' in output('data',{}):
+        cell_output['inline_data']={'mime_type':'image/jpeg',\
+                                    'data':output["data"]["image/jpeg"]}
+    elif output["output_type"] == "display_data":
+      if "image/png" in output.get('data',{}):
+        cell_output['inline_data'] = {'mime_type':'image/png',\
+                                    'data': output["data"]["image/png"]}
+
+      elif "image/jpeg" in output.get('data',{}):
+        cell_output['inline_data']={'mime_type':'image/jpeg',\
+                                    'data':output["data"]["image/jpeg"]}
+
+  return cell_output
+
+def parse_notebook(nb):
+  '''
+    Extract the questions cells, the answer cells, their output and the context cells
+    (everything other than the question and answer cells)
+    The context is auto-regressive (context for each question is all cells
+    from beginnig till the question cell)
+
+    Assumes the following structure for the notebook
+    0 or more context cells (cell_type is code or markdown)
+    1 or more question cells. has pattern starstarQ<qnum>:marks (cell_type is code or markdown)
+    1 or more answer cells. has pattern hashhashAns either in code or markdowncell
+    The answer cell might have one or more answer cells following it. 
+    NOTE: The  output of only the last code based answer cell is captured. 
+    1 chat cell. has pattern starstarChat ...
+    1 ta interaction cell. is a code cell with showunderscoreteachingunderscoreassist button
+  '''
+
+  cells = nb['ipynb']['cells']
+  nb_contexts = {}
+  nb_questions = {}
+  nb_answers = {}
+  nb_tachat={}
+  nb_outputs={}
+  max_marks = 0.0
+
+  #Pattern for marking a question cell with optional question number and marks
+  #if qnum is missing - a randome number will be generated,
+  qpat = r"\s*\*\*\s*[qQ]\s*(\d*).*?(?::?\s*?\(?)(\d+\s|\d+\.?\d+)?.*?\n(.*)"
+  #pattern for an answer cell
+  apat = r"\s*\#\#Ans.*?\n(.*)"
+  #Pattern for marking the beginning of a chat cell
+  chatpat = r"^(\*\*\s*[cC]hat).*\n(.*)"
+  #Pattern for m:arking the button enabled cell
+  tapat = r"^show_teaching_assist_button"
+
+  #States
+  CONTEXT=0
+  QUESTION=1
+  ANSWER=2
+
+  TABUTTON=3
+
+  #initial state starts assembling context for the question
+  qnum = 0 #question number
+  state = CONTEXT
+  context = ""   #variable to accumuluate context (which is non-question/non-answer) between chat cells
+  for i in range (len(cells)):
+    cell = cells[i]
+    cell_content=''.join(cell['source'])
+    cell_output = get_cell_output(cell)
+    qmatch = re.search(qpat, cell_content,re.DOTALL)
+    if qmatch:
+      #this is a question cell with one or more question cells following it
+      qnum = qmatch.group(1)
+      marks = qmatch.group(2)
+      cell_content = qmatch.group(3)
+      if qnum is None:
+        qnum = random.randint(1000,9999)
+      if qnum in nb_questions:
+        print("Error: question {qnum} already exists")
+        break 
+      if marks is None:
+        marks = 0       
+      max_marks += marks
+      #print(f"cell {i} is Question: qnum={qnum} source={cells[i]['source']}")
+      nb_questions[str(qnum)]={'question':cell_content,'marks':marks}
+      nb_answers[str(qnum)] = ""
+      #Capture the context and reset for next chat segment
+      nb_contexts[str(qnum)] = context
+      context = ""
+      state = QUESTION
+      continue
+    amatch = re.search(apat, cell_content,re.DOTALL)
+    if amatch: 
+      #this an answer cell with one or more answer cells following it
+      cell_content = amatch.group(1) #remove the leading line which has
+      #print(f"cell {i} is answer cell")
+      if state == QUESTION:
+        nb_answers[str(qnum)] = cell_content
+        nb_outputs[str(qnum)] = cell_output
+        state = ANSWER
+      else:
+        print("Error: No question has been asked for this answer!")
+        #capture context and reset for next chat segment
+        state = CONTEXT
+      continue
+    cmatch = re.search(chatpat, cell_content,re.DOTALL)
+    if cmatch:
+      #this is a chat
+      #print(f"cell:{i} chat:{qnum}: is a chat cell")
+      nb_tachat[str(qnum)] = cell_content
+      #Capture the context and reset for next chat segment
+      if context is not None:
+        #context cells followed by chat button (instructor notebook)
+        nb_contexts[str(qnum)] = context
+        context = ""
+      state = TABUTTON #anticipate the cell with TA assist  button
+      continue
+    tmatch = re.search(tapat, cell_content)
+    if tmatch:
+      #cell calls the AI tutor, dont capture anything
+      state=CONTEXT
+      continue
+    if state == CONTEXT:
+      context +=  cell_content
+    elif state == QUESTION:
+      #append cells to question till you hit a cell with Ans pattern
+      nb_questions[str(qnum)]['question'] += cell_content
+    elif state == ANSWER:
+      #assemble the answers
+      nb_answers[str(qnum)] +=  cell_content
+      nb_outputs[str(qnum)] = cell_output #Note will override outputs of previous answer cells
+    elif state == TABUTTON:
+      #should not have reached here if the cell with ta button was present
+      print("ERROR: missing code cell with show_teaching_assist_button for this chat box")
+      state = CONTEXT
+      context = ""
+
+  return nb_contexts, nb_questions, nb_answers, nb_outputs, nb_tachat, max_marks
+
+def ask_assist(session:requests.Session, 
+               AI_TA_URL:str, 
+               qnum:int, 
+               notebook_id:str, 
+               institution_id:str, 
+               term_id:str, 
+               course_id:str,
+               WAIT_TIME:float = 2.0
+               ):
+  '''
+  form the prompt and send it to the AI_TA server for
+  an answer
+  '''
+
   nb = _message.blocking_request('get_ipynb')
-  cells = [cell for i,cell in enumerate(nb['ipynb']['cells'])]
-  idx = get_cell_idx(cells,qnum)
-  return cells[idx]['source'], cells[idx]['cell_type']
-
-
-def get_answer_cell(qnum:int):
-  '''get the contents of the answer cell corresponding to the question qnum.
-  Assumption is that it is the next cell to the answer cell
-  return cell content of the cell and the cell type (code, markdown, raw)
-  '''
-  nb = _message.blocking_request('get_ipynb')
-  cells = [cell for i,cell in enumerate(nb['ipynb']['cells'])]
-  idx = get_cell_idx(cells,qnum)
-  return cells[idx+1]['source'], cells[idx+1]['cell_type']
-
-def get_cells_to_evaluate():
-  nb = _message.blocking_request('get_ipynb')
-  cells = [cell for i,cell in enumerate(nb['ipynb']['cells'])]
-  for i,cell in enumerate(cells):
-    print(i, cell['source'])
-
-
-def form_prompt(q_id:str):
-  '''
-  Form the prompt for LLM by extracting the 
-  question from the cell containing q_id
-  and the answer from the cell after it
-  '''
-  qpat = "[qQ](\d+)"
-  qmat=re.search(qpat,q_id)
-  if qmat is not None:
-    qnum = int(qmat.group(1))
-  else:
-    print(f"Invalid format for question id {q_id}")
-    return
-  sentences,_ = get_question_cell(qnum)
-  question = "The assignment question is: "+" ".join(sentences)+"\n"
-  sentences,_ = get_answer_cell(qnum)
-  answer = "The student's answer is: "+" ".join(sentences)+"\n"
-  prompt = question+answer
-  return prompt
-
-def login():
-  '''Log in to the app using google credentials'''
-
-  try:
-      response = requests.get(GRADER_URL)
-      response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
-
-      content_type = response.headers.get('Content-Type', '') # Use .get for safety
-      print(f"Content-Type: {content_type}\n")
-      display(HTML(response.text))
-
-  except requests.exceptions.RequestException as e:
-      print(f"An error occurred: {e}")
-
-def ask_assist(GRADER_URL:str, q_id:str,rubric_link:str = None, WAIT_TIME:float = 2.0):
-
-  prompt = form_prompt(q_id)
-
+  context, questions, answers, outputs, ta_chat, _ = parse_notebook(nb)
+  
   payload = {
-    "query": prompt,
-    "q_id":q_id
+    "qnum":qnum,
+    "context": context[str(qnum)],
+    "question": questions[str(qnum)],
+    "answer": answers[str(qnum)],
+    "output": outputs[str(qnum)],
+    "ta_chat":ta_chat[str(qnum)],
+    "notebook_id": notebook_id,
+    "institution_id": institution_id,
+    "term_id": term_id,
+    "course_id":course_id
   }
-  if 'user_name' in globals(): #variable has been set
-    payload['user_name'] = user_name
 
-  if 'user_email' in globals(): #variable has been set
-    payload['user_email'] = user_email
-
-  if rubric_link is not None:
-    payload['rubric_link'] = rubric_link
-
-  if GRADER_URL is None:
+  if AI_TA_URL is None:
     display(Markdown(prompt))
-    print("Sorry Teaching Assistant is not available yet")
+    print("AI Teaching Assistant url (AI_TA_URL) is not set")
     return
   try:
-      print("Please wait, asking the grader...")
-      response = requests.post(GRADER_URL+"assist",json=payload, timeout=WAIT_TIME*60)
+      print("Please wait, asking the AI TA ...")
+      response = session.post(AI_TA_URL+"assist",json=payload, timeout=WAIT_TIME*60)
 
       if response.status_code == 200:
         data = response.json()
-        print("Assistant's response is: \n")
+        print("AI TAssistant's response is: \n")
         display(Markdown(data['response']))
       else:
-        print(f"Call to assistant failed with status code: {response.status_code}")
+        print(f"Call to AI TAssistant failed with status code: {response.status_code}")
         print("Error message:", response.text)
 
   except requests.exceptions.Timeout:
-    print(f"The teaching assistant is taking too long. Please retry after some time.")
+    print(f"The AI TAssistant is taking too long. Please retry after some time.")
   except requests.exceptions.RequestException as e:
-    print(f"An error occurred: {e}")
+    print(f"ask_assist: An error occurred: {e}")
 
+def submit_eval(session:requests.Session, 
+                AI_TA_URL:str, 
+                notebook_id: str,
+                course_id: str, 
+                term_id: str,
+                institution_id:str,
+                WAIT_TIME:float = 2.0):
 
-def check_answer(GRADER_URL:str, q_id:str, course_id:str, notebook_id:str, rubric_link:str = None):
+  '''
+  The notebook is parsed and submitted for evaluation.
+  Evaluated notebooks will be shared via email separately.
+  '''
 
-  '''This function will be deprecated soon'''
+  nb = _message.blocking_request('get_ipynb')
+  context,questions,answers,outputs,_,_ = parse_notebook(nb)
 
-  prompt = form_prompt(q_id)
   payload = {
-    "query": prompt,
-    "course_id":course_id,
-    "notebook_id": notebook_id,
-    "q_name":q_id
-  }
-  if rubric_link is not None:
-    payload['rubric_link'] = rubric_link
+      "notebook_id": notebook_id,
+      "context": context,
+      "questions": questions,
+      "answers": answers,
+      "outputs":outputs,
+      "institution_id": institution_id,
+      "term_id": term_id,
+      "course_id": course_id,  
+    }
 
-  if GRADER_URL is None:
+  if AI_TA_URL is None:
     display(Markdown(prompt))
-    print("Sorry Teaching Assistant is not available yet")
+    print("ERROR: AI-TA URL is None")
     return
   try:
-      response = requests.post(GRADER_URL+"assist",json=payload)
+      response = session.post(AI_TA_URL+"eval",json=payload, timeout=WAIT_TIME*60)
 
       if response.status_code == 200:
         data = response.json()
-        print("Assistant's response is: \n")
+        print("AI TAssistant's response is: \n")
         display(Markdown(data['response']))
       else:
-        print(f"Call to assistant failed with status code: {response.status_code}")
-        print("Error message:", response.text)
-
-  except requests.exceptions.RequestException as e:
-    print(f"An error occurred: {e}")
-
-def submit_eval(GRADER_URL:str, user_name:str, user_email:str, course_id: str=None, notebook_id: str=None,rubric_link:str = None, WAIT_TIME:float = 2.0):
-
-  answer_notebook = _message.blocking_request('get_ipynb')
-  #answer_notebook = nb['ipynb']['cells']
-  answer_hash = calculate_json_md5(answer_notebook)
-  #answer_notebook_string = json.dumps(answer_notebook)
-
-  payload = {
-    "course_id": course_id,
-    "user_name": user_name,
-    "user_email":user_email,
-    "notebook_id": notebook_id,
-    "answer_notebook": answer_notebook,
-    "answer_hash":answer_hash,
-    "rubric_link":rubric_link
-  }
-
-  if GRADER_URL is None:
-    display(Markdown(prompt))
-    print("Sorry Teaching Assistant is not available yet. Try again later")
-    return
-  try:
-      print("Please wait, submitting to the grader...")
-      response = requests.post(GRADER_URL+"eval",json=payload, timeout=WAIT_TIME*60)
-
-      if response.status_code == 200:
-        data = response.json()
-        print("Assistant's response is: \n")
-        display(Markdown(data['response']))
-      else:
-        print(f"Call to Assistant failed with status code: {response.status_code}")
+        print(f"Call to AI TAssistant failed with status code: {response.status_code}")
         print("Error message:", response.text)
 
   except requests.exceptions.Timeout:
-    print(f"The teaching assistant is taking too long. Please retry after some time.")
+    print(f"The AI Teaching assistant is taking too long. Please retry after some time.")
   except requests.exceptions.RequestException as e:
     print(f"An error occurred: {e}")
 
+def upload_rubric(session:requests.Session, 
+                  AI_TA_URL:str, 
+                  notebook_id: str, 
+                  course_id: str, 
+                  term_id:str, 
+                  institution_id:str, 
+                  WAIT_TIME:float = 2.0):
+  '''
+  upload the context, question, answers to the server.
+  The uploader needs to be authenticated as a instructor for the course.
+  '''
+  nb = _message.blocking_request('get_ipynb')
+  context,questions,answers,outputs,_,max_marks = parse_notebook(nb)
 
+  payload = {
+      "notebook_id": notebook_id,
+      "max_marks":max_marks,
+      "context": context,
+      "questions": questions,
+      "answers": answers,
+      "outputs":outputs,
+      "institution_id": institution_id,
+      "term_id": term_id,
+      "course_id": course_id,  
+    }
 
-# Define a function to be called when the button is clicked
-def on_login_button_clicked(b):
-  login()
+  if AI_TA_URL is None:
+    display(Markdown(prompt))
+    print("ERROR: AI-TA URL is None")
+    return
+  try:
+      response = session.post(AI_TA_URL+"upload_rubric",json=payload, timeout=WAIT_TIME*60)
 
-# Attach the function to the button's click event
-def show_login_button ():
-  clear_output()
-  # Create a button
-  button = Button(description="Login", button_style='info', layout=Layout(width='auto'))
+      if response.status_code == 200:
+        data = response.json()
+        print("AI TAssistant's response is: \n")
+        display(Markdown(data['response']))
+      else:
+        print(f"Call to AI TAssistant failed with status code: {response.status_code}")
+        print("Error message:", response.text)
 
-  button.on_click(on_login_button_clicked)
-  # Display the button in the notebook
-  display(button)
+  except requests.exceptions.Timeout:
+    print(f"The AI Teaching assistant is taking too long. Please retry after some time.")
+  except requests.exceptions.RequestException as e:
+    print(f"An error occurred: {e}")
 
-def show_teaching_assist_button(GRADER_URL:str, q_id:str,rubric_link:str=None, WAIT_TIME:float = 2.0):
+def show_teaching_assist_button(session:requests.Session, 
+                                AI_TA_URL:str, 
+                                qnum:int,
+                                notebook_id:str,
+                                institution_id:str,
+                                term_id:str,
+                                course_id:str,
+                                WAIT_TIME:float = 2.0):
     clear_output()
     # Create a button
-    button = Button(description=f"Check/Help with question {q_id}!", button_style='info', layout=Layout(width='auto'))
+    button = Button(description=f"Check/Help with question Q{qnum}!", button_style='info', layout=Layout(width='auto'))
     # Attach the function to the button's click event
-    button.on_click(lambda b:ask_assist(GRADER_URL, q_id, rubric_link, WAIT_TIME))
+    button.on_click(lambda b:ask_assist(session, AI_TA_URL, qnum, notebook_id, institution_id, term_id, course_id, WAIT_TIME))
     # Display the button in the notebook
     display(button)
 
-def show_submit_eval_button(GRADER_URL:str, user_name:str, user_email:str, course_id: str=None, notebook_id: str=None, rubric_link:str=None, WAIT_TIME:float = 2.0):
+def show_submit_eval_button(session:requests.Session,AI_TA_URL:str, user_name:str, user_email:str, course_id: str=None, notebook_id: str=None, rubric_link:str=None, WAIT_TIME:float = 2.0):
     clear_output()
     # Create a button
     button = Button(description=f"Submit my notebook!", button_style='info', layout=Layout(width='auto'))
     # Attach the function to the button's click event
-    button.on_click(lambda b:submit_eval(GRADER_URL, user_name, user_email, course_id, notebook_id, rubric_link, WAIT_TIME))
+    button.on_click(lambda b:submit_eval(session,AI_TA_URL, user_name, user_email, course_id, notebook_id, rubric_link, WAIT_TIME))
     # Display the button in the notebook
     display(button)
 
@@ -347,41 +474,15 @@ def download_colab_notebook(notebook_url):
     return notebook_json
 
 
-def get_user_info(nb):
+def submit_nb_eval(session:requests.Session, notebook_url, AI_TA_URL, rubric_link, course_id, notebook_id):
   '''
-  Extract user_name and user_email from the notebook.
-  This is in the first code cell
-  '''
-  user_name = None
-  user_email = None
-  cells =  nb['cells']
-  pat = r".*\s+user_name\s*=\s*[\"\'](.+)[\"\']\s+user_email\s*=\s*[\"\'](.*)[\"\']"
-  cell_no = 0
-  for cell in cells:
-    if cell['cell_type'] == 'code' :
-      #check whether this code cell defines these two
-      txt = ' '.join(cell['source'][0:])
-      #txt = cell['source'][1]
-      print(f"Cell {cell_no}:"+txt.replace('\n', ' '))
-      mat = re.match(pat, txt)
-      if mat:
-        user_name = mat.group(1)
-        user_email = mat.group(2)
-        #found in this code cell. So exit the for loop
-        break
-    cell_no += 1
-  return user_name, user_email
-
-
-def submit_nb_eval(notebook_url, GRADER_URL, rubric_link, course_id, notebook_id):
-  '''
-  Submit the notebook for evaluation to the GRADER
+  Submit the notebook from the for evaluation to the GRADER.
+  NEEDS TO BE FIXED.
   '''
   answer_notebook = download_colab_notebook(notebook_url)
   if answer_notebook is None:
     print("Cant access notebook")
     return False
-
 
   user_name, user_email = get_user_info(answer_notebook)
   answer_hash = calculate_json_md5(answer_notebook)
@@ -400,23 +501,21 @@ def submit_nb_eval(notebook_url, GRADER_URL, rubric_link, course_id, notebook_id
   #print(payload_str)
   print(f"Length of notebook = {len(json.dumps(payload['answer_notebook'],indent=4))}")
 
-  if GRADER_URL is None:
+  if AI_TA_URL is None:
     #display(Markdown(prompt))
-    print("Sorry Teaching Assistant is not available yet. Try again later")
+    print("AI_TA_URL is not set")
     return False
   try:
-
       # Capture the actual request being sent
-      session = requests.Session()
-      req = requests.Request('POST', GRADER_URL, json=payload)
-      prepared = session.prepare_request(req)
+      #req = requests.Request('POST', AI_TA_URL, json=payload)
+      #prepared = session.prepare_request(req)
 
-      print("URL:", prepared.url)
-      print("Headers:", prepared.headers)
-      print("Body:", prepared.body)
+      #print("URL:", prepared.url)
+      #print("Headers:", prepared.headers)
+      #print("Body:", prepared.body)
 
       #send to server
-      response = requests.post(GRADER_URL+"eval",json=payload)
+      response = session.post(AI_TA_URL+"eval",json=payload)
 
       if response.status_code == 200:
         data = response.json()
@@ -432,25 +531,28 @@ def submit_nb_eval(notebook_url, GRADER_URL, rubric_link, course_id, notebook_id
     print(f"An error occurred: {e}")
     return False
 
-def fetch_graded_response(GRADER_URL, notebook_id, user_email):
+def fetch_graded_response(session:requests.Session, AI_TA_URL, notebook_id, student_id):
   '''
   Fetch the graded response from the GRADER
   '''
   payload = {
     "notebook_id": notebook_id,
-    "user_email": user_email
+    "student_id":student_id,
+    "institution_id": institution_id,
+    "term_id": term_id,
+    "course_id": course_id,
   }
 
-  if GRADER_URL is None:
+  if AI_TA_URL is None:
     #display(Markdown(prompt))
-    print("Sorry Teaching Assistant is not available yet. Try again later")
+    print("AI_TA_URL is not set")
     return False
   try:
-      response = requests.post(GRADER_URL+"fetch_grader_response",json=payload)
+      response = session.post(AI_TA_URL+"fetch_grader_response",json=payload)
 
       if response.status_code == 200:
         data = response.json()
-        print("Assistant's response is: \n")
+        print("AI TAssistant's response is: \n")
         return(data['grader_response'])
       else:
         print(f"Call to Assistant failed with status code: {response.status_code}")
@@ -461,20 +563,28 @@ def fetch_graded_response(GRADER_URL, notebook_id, user_email):
     print(f"An error occurred: {e}")
     return None
 
-def fetch_student_list(GRADER_URL, notebook_id):
+def fetch_marks_list(session:requests.Session, 
+                     AI_TA_URL, 
+                     institution_id:str, 
+                     term_id:str, 
+                     course_id:str, 
+                     notebook_id: str):
   '''
-  Fetch the student list and the marks for notebook_id from the GRADER
+  Fetch the list of students and their marks for notebook_id from the GRADER
   '''
   payload = {
+    "institution_id": institution_id,
+    "term_id": term_id,
+    "course_id": course_id,
     "notebook_id": notebook_id,
   }
 
-  if GRADER_URL is None:
+  if AI_TA_URL is None:
     #display(Markdown(prompt))
     print("Sorry Teaching Assistant is not available yet. Try again later")
     return False
   try:
-      response = requests.post(GRADER_URL+"fetch_student_list",json=payload)
+      response = session.post(AI_TA_URL+"fetch_marks_list",json=payload)
 
       if response.status_code == 200:
         data = response.json()
@@ -488,21 +598,24 @@ def fetch_student_list(GRADER_URL, notebook_id):
     print(f"An error occurred: {e}")
     return None
 
-def notify_student_grades(GRADER_URL, notebook_id, user_email):
+def notify_student_grades(session:requests.Session, AI_TA_URL, institution_id: str, term_id: str, course_id: str, notebook_id, user_gmail)->bool:
   '''
   Send email to the student with the graded answer book
   '''
   payload = {
+    "institution_id": institution_id,
+    "term_id": term_id,
+    "course_id": course_id,
     "notebook_id": notebook_id,
-    "user_email": user_email
+    "student_id": user_gmail
   }
 
-  if GRADER_URL is None:
+  if AI_TA_URL is None:
     #display(Markdown(prompt))
-    print("Sorry Teaching Assistant is not available yet. Try again later")
+    print("AI_TA_URL is empty")
     return False
   try:
-      response = requests.post(GRADER_URL+"notify_student_grades",json=payload)
+      response = session.post(AI_TA_URL+"notify_student_grades",json=payload)
 
       if response.status_code == 200:
         print (response.json())
@@ -514,4 +627,4 @@ def notify_student_grades(GRADER_URL, notebook_id, user_email):
 
   except requests.exceptions.RequestException as e:
     print(f"An error occurred: {e}")
-    return None
+    return False
