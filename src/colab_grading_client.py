@@ -21,13 +21,14 @@ import hashlib
 from typing import Any, Dict
 import re
 
-from google.colab import auth
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
 
 from google.auth.transport.requests import Request
 import google.auth
+from google.colab import auth
+from google.oauth2 import id_token
 
 from google.genai import types
 
@@ -52,13 +53,36 @@ def generate_random_string(l:int)->str:
 
 def authenticate():
   # One-click Google auth (student clicks "Allow")
+#  SCOPES=[
+#      'https://www.googleapis.com/auth/userinfo.email',
+#      'openid',
+#      'profile'
+#  ]
+
+#  flow = InstalledAppFlow.from_client_config(
+#        {
+#            "installed": {
+#                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+#                "token_uri": "https://oauth2.googleapis.com/token",
+#            }
+#        },
+#        scopes=SCOPES
+#    )
+
   auth.authenticate_user()
   creds, _ = google.auth.default()
   creds.refresh(Request())
+  #creds = flow.run_local_server(port=0, open_browser=False)
+
+  if not creds.id_token:
+    # Fallback if id_token isn't automatically populated
+    # Some environments require fetching it explicitly
+    from google.identity.access_context_manager import v1
+    print("Note: If id_token is missing, ensure you are signed into Colab.")
 
   # Exchange Google token for app JWT
   resp = requests.post(f"{AI_TA_URL}/colab_auth", json={
-    "google_token": creds.token,
+    "google_token": creds.id_token,
     "course_id": course_id
   })
 
