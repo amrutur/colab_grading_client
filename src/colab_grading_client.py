@@ -51,7 +51,7 @@ def generate_random_string(l:int)->str:
   return result_string
 
 
-def authenticate():
+def authenticate(AI_TA_URL:str)->requests.Session:
     import requests
     import getpass
     from IPython.display import display, HTML
@@ -77,6 +77,7 @@ def authenticate():
     
     session = requests.Session()
     session.headers.update({"Authorization": f"Bearer {token}"})
+    session.user_info = user
     return session
 
 def get_cell_output(cell):
