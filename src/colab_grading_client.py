@@ -52,48 +52,32 @@ def generate_random_string(l:int)->str:
 
 
 def authenticate():
-  # One-click Google auth (student clicks "Allow")
-#  SCOPES=[
-#      'https://www.googleapis.com/auth/userinfo.email',
-#      'openid',
-#      'profile'
-#  ]
-
-#  flow = InstalledAppFlow.from_client_config(
-#        {
-#            "installed": {
-#                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-#                "token_uri": "https://oauth2.googleapis.com/token",
-#            }
-#        },
-#        scopes=SCOPES
-#    )
-
-  auth.authenticate_user()
-  creds, _ = google.auth.default()
-  creds.refresh(Request())
-  #creds = flow.run_local_server(port=0, open_browser=False)
-
-  if not creds.id_token:
-    # Fallback if id_token isn't automatically populated
-    # Some environments require fetching it explicitly
-    from google.identity.access_context_manager import v1
-    print("Note: If id_token is missing, ensure you are signed into Colab.")
-
-  # Exchange Google token for app JWT
-  resp = requests.post(f"{AI_TA_URL}/colab_auth", json={
-    "google_token": creds.id_token,
-    "course_id": course_id
-  })
-
-  resp.raise_for_status()
-  TOKEN = resp.json()["token"]
-  print(f"Authenticated {resp.json()['user']['name']}as: {resp.json()['user']['gmail']}")
- 
-  # Create authenticated session for all subsequent API calls
-  session = requests.Session()
-  session.headers.update({"Authorization": f"Bearer {TOKEN}"})
-  return session
+    import requests
+    import getpass
+    from IPython.display import display, HTML
+    
+    login_url = f"{AI_TA_URL}/login"
+    
+    display(HTML(f"""
+        <p><strong>Step 1:</strong> <a href="{login_url}" target="_blank">Click here to sign in with Google</a></p>
+        <p><strong>Step 2:</strong> After signing in, copy the token shown on screen</p>
+        <p><strong>Step 3:</strong> Paste the token below</p>
+    """))
+    
+    token = getpass.getpass("Paste your token here: ")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(f"{AI_TA_URL}/whoami", headers=headers)
+    
+    if resp.status_code == 401:
+        raise ValueError("Invalid token — please sign in again")
+    
+    user = resp.json()
+    print(f"Authenticated as: {user['name']} ({user['email']})")
+    
+    session = requests.Session()
+    session.headers.update({"Authorization": f"Bearer {token}"})
+    return session
 
 def get_cell_output(cell):
   '''
