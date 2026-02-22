@@ -133,17 +133,32 @@ def get_notebook(max_retries:int = 5, retry_delay:float = 0.5):
   Get the current notebook's JSON from the Colab frontend.
   Retries a few times if the frontend connection is not ready.
   Returns the notebook dict or None if all retries fail.
+
+  Note: Large cell outputs (e.g., 3D visualizations, large plots) can cause
+  the request to fail. Consider clearing outputs before submission if this occurs.
   '''
   for attempt in range(max_retries):
-    nb = _message.blocking_request('get_ipynb')
-    if nb is not None:
-      return nb
+    try:
+      nb = _message.blocking_request('get_ipynb', timeout_sec=10)
+      if nb is not None:
+        return nb
+    except Exception as e:
+      # blocking_request can raise exceptions for timeouts or oversized responses
+      if attempt == max_retries - 1:
+        print(f"Warning: Failed to retrieve notebook - {type(e).__name__}: {e}")
+        print("If you have large cell outputs (3D visualizations, large plots), try:")
+        print("  1. Runtime > Restart and clear outputs")
+        print("  2. Or clear specific cell outputs before submitting")
+        return None
+
     if attempt < max_retries - 1:
       # Exponential backoff: 0.5s, 1s, 2s, 4s
       delay = retry_delay * (2 ** attempt)
       print(f"Waiting for notebook to load, retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
       time.sleep(delay)
+
   print("Error: Could not access the notebook. Please ensure the notebook is fully loaded and try again.")
+  print("If you have large cell outputs (3D visualizations, large plots), try clearing them first.")
   return None
 
 def parse_notebook(nb):
