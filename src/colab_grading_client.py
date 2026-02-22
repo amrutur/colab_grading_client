@@ -175,11 +175,13 @@ def parse_notebook(nb):
   #if qnum is missing - a randome number will be generated,
   qpat = r"\s*\*\*\s*[qQ]\s*(\d*).*?(?::?\s*?\(?)(\d+\s|\d+\.?\d+)?.*?\n(.*)"
   #pattern for an answer cell
-  apat = r"\s*\#\#Ans.*?\n(.*)"
+  apat = r"\s*\#\#\s*[aA]ns.*?\n(.*)"
   #Pattern for marking the beginning of a chat cell
   chatpat = r"^(\*\*\s*[cC]hat).*\n(.*)"
   #Pattern for m:arking the button enabled cell
-  tapat = r"^show_teaching_assist_button"
+  tapat = r"show_teaching_assist_button\("
+  #pattern to identify a function definition in a cell
+  fdefpat = r"\s*def"
 
   #States
   CONTEXT=0
@@ -238,14 +240,15 @@ def parse_notebook(nb):
       #print(f"cell:{i} chat:{qnum}: is a chat cell")
       nb_tachat[str(qnum)] = cell_content
       #Capture the context and reset for next chat segment
-      if context is not None:
+      if context != "":
         #context cells followed by chat button (instructor notebook)
         nb_contexts[str(qnum)] = context
         context = ""
       state = TABUTTON #anticipate the cell with TA assist  button
       continue
     tmatch = re.search(tapat, cell_content)
-    if tmatch:
+    fnomatch = not re.search(fdefpat, cell_content)
+    if fnomatch and tmatch:
       #cell calls the AI tutor, dont capture anything
       state=CONTEXT
       continue
