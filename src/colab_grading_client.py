@@ -128,7 +128,7 @@ def get_cell_output(cell):
 
   return cell_output
 
-def get_notebook(max_retries:int = 3, retry_delay:float = 1.0):
+def get_notebook(max_retries:int = 5, retry_delay:float = 0.5):
   '''
   Get the current notebook's JSON from the Colab frontend.
   Retries a few times if the frontend connection is not ready.
@@ -139,8 +139,10 @@ def get_notebook(max_retries:int = 3, retry_delay:float = 1.0):
     if nb is not None:
       return nb
     if attempt < max_retries - 1:
-      print(f"Could not access notebook, retrying in {retry_delay}s... (attempt {attempt + 1}/{max_retries})")
-      time.sleep(retry_delay)
+      # Exponential backoff: 0.5s, 1s, 2s, 4s
+      delay = retry_delay * (2 ** attempt)
+      print(f"Waiting for notebook to load, retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
+      time.sleep(delay)
   print("Error: Could not access the notebook. Please ensure the notebook is fully loaded and try again.")
   return None
 
