@@ -10,7 +10,7 @@
 `colab_grading_client` provides client-side functions for students to submit work and receive AI-powered assistance in Google Colab notebooks, and for instructors to manage grading workflows. It seamlessly integrates with grading servers via REST APIs.
 
 - **Repository**: https://github.com/amrutur/colab_grading_client
-- **Version**: 1.0.7
+- **Version**: 1.0.26
 - **License**: MIT
 - **Python**: >=3.7
 - **Author**: Bharadwaj Amrutur (amrutur@gmail.com)
@@ -34,14 +34,14 @@ Or in a Colab notebook:
 ### For Students
 
 ```python
-from colab_grading_client import ask_assist, submit_eval, show_clear_output_button
+from colab_grading_client import show_teaching_assist_button, show_submit_eval_button, show_clear_output_button, authenticate
 import requests
 
 # Create a session
-session = requests.Session()
+session = authenticate()
 
 # Get help on a specific question
-ask_assist(session, AI_TA_URL, qnum=1, notebook_id="assignment1",
+show_teaching_assist_button(session, AI_TA_URL, qnum=1, notebook_id="assignment1",
            institution_id="university", term_id="fall2026",
            course_id="cs101", WAIT_TIME=2.0)
 
@@ -49,7 +49,7 @@ ask_assist(session, AI_TA_URL, qnum=1, notebook_id="assignment1",
 show_clear_output_button()
 
 # Submit your notebook for grading
-submit_eval(session, AI_TA_URL, notebook_id="assignment1",
+show_submit_eval_button(session, AI_TA_URL, notebook_id="assignment1",
             course_id="cs101", term_id="fall2026",
             institution_id="university", WAIT_TIME=2.0)
 ```
@@ -57,18 +57,20 @@ submit_eval(session, AI_TA_URL, notebook_id="assignment1",
 ### For Instructors
 
 ```python
-from colab_grading_client import fetch_student_list, fetch_graded_response, notify_student_grades
+from colab_grading_client import show_teaching_assist_button, upload_rubric, authenticate
 
-# Get list of students who submitted
-fetch_student_list(GRADER_URL, notebook_id="assignment1")
 
-# Retrieve a specific student's graded results
-fetch_graded_response(GRADER_URL, notebook_id="assignment1",
-                      user_email="student@university.edu")
+session = authenticate(AI_TA_URL)
 
-# Send email notification to student
-notify_student_grades(GRADER_URL, notebook_id="assignment1",
-                      user_email="student@university.edu")
+# Get help on a specific question
+show_teaching_assist_button(session, AI_TA_URL, qnum=1, notebook_id="assignment1",
+           institution_id="university", term_id="fall2026",
+           course_id="cs101", WAIT_TIME=2.0)
+
+
+upload_rubric(session, AI_TA_URL, notebook_id="assignment1", course_id="cs101",
+           term_id="fall2026", institution_id="university" 
+           )
 ```
 
 ## Features
@@ -76,53 +78,85 @@ notify_student_grades(GRADER_URL, notebook_id="assignment1",
 ### 🎓 Student Features
 
 - **Interactive Assistance**: Get AI-powered help on specific questions using `ask_assist()`
-- **Easy Submission**: Submit notebooks for grading with `submit_eval()`
-- **UI Buttons**: Display interactive buttons for common actions
 - **Large Output Handling**: Clear large cell outputs (3D visualizations, plots) before submission
 
 ### 👨‍🏫 Instructor Features
 
-- **Batch Grading**: Submit any notebook by URL for evaluation
-- **Student Management**: Fetch lists of students and their grades
-- **Email Notifications**: Automatically notify students about their grades
-- **Flexible Rubrics**: Support for custom grading rubrics via URLs
+- **Interactive Help with rubric**: Help with rubric questions and answers
 
 ### 🔧 Technical Features
 
 - **Notebook Parsing**: Automatic extraction of questions, answers, and context from notebooks
 - **Pattern Matching**: Flexible regex patterns for question/answer identification
 - **Error Handling**: Robust timeout handling and graceful error messages
-- **Google Drive Integration**: Seamless access to Colab notebooks via Drive API
-- **MD5 Verification**: Notebook integrity checking
 
 ## Notebook Structure
 
 ### Marking Questions
 
-Questions should be marked with the `**Q{number}**` pattern:
+Questions should be marked with the `**Q{number}: marks**` pattern:
 
 ```markdown
-**Q1** (10 points)
+**Q1: 10**
 What is the time complexity of binary search?
 ```
 
 ### Marking Answers
 
-Answers should be marked with `##Ans` or `## Ans`:
+The first of a sequence of answer cells should  `##Ans` or `## Ans`
 
 ```markdown
-## Ans
+##Ans
+
 The time complexity is O(log n) because...
 ```
 
-### User Information
+For rubric answer, the answer components can have percentages 
 
-Include your information in the first code cell:
+```markdown
+##Ans
+
+##40%
+The time complexity is O(log n) because...
+
+##60%
+The reason is ....
+```
+
+### Server access information
+
+Include this in a cell at the top of the notebook:
 
 ```python
-user_name = "John Doe"
-user_email = "john.doe@university.edu"
+#@title Please run this cell to install the client to access the AI-TA
+I_TA_URL="https://ai-ta-326056429620.asia-south1.run.app/"
+course_id="cp260"
+notebook_id = "Midterm"
+institution_id="IISc"
+term_id = "2025-26"
+!pip install colab-grading-client==1.0.26
+import colab_grading_client as ta
 ```
+
+### Authentication
+
+Include this in a cell and run to authenticate:
+
+```python
+# @title Please run this cell to authenticate yourself using your gmail credentials. A separate window will open for this. copy the token and paste in the text box below and press enter key to complete the authentication. Sometimes text box doesnt display - in which case rerun the cell.
+session=ta.authenticate(AI_TA_URL)
+```
+This will output: 
+```markdown
+Step 1: Click here to sign in with Google
+Step 2: After signing in, copy the token shown on screen
+Step 3: Paste the token below
+Paste your token here: ··········
+```
+On clicking the signing - it will open a new window where after authentication with google,
+a JWT token will be printed. This can be copied and pasted into the text box below step 3
+to complete the authentication process.
+
 
 ## Core Functions
 
@@ -140,10 +174,7 @@ user_email = "john.doe@university.edu"
 
 | Function | Description | Parameters |
 |----------|-------------|------------|
-| `submit_nb_eval()` | Submit notebook by URL | `notebook_url`, `GRADER_URL`, `rubric_link`, `course_id`, `notebook_id` |
-| `fetch_graded_response()` | Get graded results | `GRADER_URL`, `notebook_id`, `user_email` |
-| `fetch_student_list()` | Get student list/grades | `GRADER_URL`, `notebook_id` |
-| `notify_student_grades()` | Email student notification | `GRADER_URL`, `notebook_id`, `user_email` |
+|`upload_rubric`|upload the rubric to server|`session`,`AI_TA_URL`,`notebook_id`, `course_id`, `term_id`, `institution_id`, `WAIT_TIME` |
 
 ### Utility Functions
 
@@ -152,8 +183,6 @@ user_email = "john.doe@university.edu"
 | `get_notebook()` | Retrieve current notebook JSON |
 | `parse_notebook()` | Extract questions, answers, and context |
 | `clear_large_outputs()` | Clear outputs and show instructions |
-| `get_file_id_from_share_link()` | Extract file ID from Drive URLs |
-| `download_colab_notebook()` | Download notebook via Drive API |
 
 ## API Endpoints
 
@@ -163,9 +192,6 @@ The client communicates with a grading server via REST API:
 |----------|--------|---------|
 | `/assist` | POST | Get teaching assistance |
 | `/eval` | POST | Submit for evaluation |
-| `/fetch_grader_response` | POST | Get graded results |
-| `/fetch_student_list` | POST | Get student list/grades |
-| `/notify_student_grades` | POST | Email student |
 
 ## Handling Large Outputs
 
