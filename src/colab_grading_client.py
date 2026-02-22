@@ -31,6 +31,7 @@ from google.colab import auth
 from google.oauth2 import id_token
 
 from google.genai import types
+import time
 
 import random
 import string
@@ -126,6 +127,22 @@ def get_cell_output(cell):
                                     'data':output["data"]["image/jpeg"]}
 
   return cell_output
+
+def get_notebook(max_retries:int = 3, retry_delay:float = 1.0):
+  '''
+  Get the current notebook's JSON from the Colab frontend.
+  Retries a few times if the frontend connection is not ready.
+  Returns the notebook dict or None if all retries fail.
+  '''
+  for attempt in range(max_retries):
+    nb = _message.blocking_request('get_ipynb')
+    if nb is not None:
+      return nb
+    if attempt < max_retries - 1:
+      print(f"Could not access notebook, retrying in {retry_delay}s... (attempt {attempt + 1}/{max_retries})")
+      time.sleep(retry_delay)
+  print("Error: Could not access the notebook. Please ensure the notebook is fully loaded and try again.")
+  return None
 
 def parse_notebook(nb):
   '''
@@ -261,7 +278,9 @@ def ask_assist(session:requests.Session,
   an answer
   '''
 
-  nb = _message.blocking_request('get_ipynb')
+  nb = get_notebook()
+  if nb is None:
+    return
   context, questions, answers, outputs, ta_chat, _ = parse_notebook(nb)
   
   payload = {
@@ -311,7 +330,9 @@ def submit_eval(session:requests.Session,
   Evaluated notebooks will be shared via email separately.
   '''
 
-  nb = _message.blocking_request('get_ipynb')
+  nb = get_notebook()
+  if nb is None:
+    return
   context,questions,answers,outputs,_,_ = parse_notebook(nb)
 
   payload = {
@@ -356,7 +377,9 @@ def upload_rubric(session:requests.Session,
   upload the context, question, answers to the server.
   The uploader needs to be authenticated as a instructor for the course.
   '''
-  nb = _message.blocking_request('get_ipynb')
+  nb = get_notebook()
+  if nb is None:
+    return
   context,questions,answers,outputs,_,max_marks = parse_notebook(nb)
 
   payload = {
