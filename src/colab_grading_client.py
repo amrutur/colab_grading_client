@@ -459,6 +459,45 @@ def show_submit_eval_button(session:requests.Session,AI_TA_URL:str, user_name:st
     # Display the button in the notebook
     display(button)
 
+def clear_large_outputs():
+    """
+    Clears the current cell's output and provides instructions for clearing all outputs.
+
+    Large outputs (like 3D visualizations, large plots) can prevent the grading client
+    from reading the notebook. This function helps users clear those outputs.
+    """
+    clear_output(wait=False)
+    display(Markdown("""
+### ✅ Current cell output cleared!
+
+If you have **large outputs** from other cells (3D visualizations, plots), you can:
+
+1. **Clear all outputs**: Go to `Runtime > Restart and clear outputs`
+2. **Clear specific cell**: Click the three dots on a cell output and select "Clear output"
+
+**Large outputs can cause submission errors**, especially from:
+- Open3D 3D visualizations
+- Large matplotlib plots
+- Interactive widgets
+- Large data displays
+
+After clearing, you can safely use `ask_assist()` or `submit_eval()`.
+    """))
+
+def show_clear_output_button():
+    """
+    Displays a button to clear large outputs that might interfere with notebook submission.
+
+    Useful to call before ask_assist() or submit_eval() if you have large cell outputs.
+    """
+    clear_output()
+    # Create a button
+    button = Button(description="Clear Output", button_style='warning', layout=Layout(width='auto'))
+    # Attach the function to the button's click event
+    button.on_click(lambda b: clear_large_outputs())
+    # Display the button in the notebook
+    display(button)
+
 def get_file_id_from_share_link(share_link: str) -> str or None:
     """
     Extracts the file ID from a Google Drive share link.
