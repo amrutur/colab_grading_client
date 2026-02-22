@@ -442,7 +442,7 @@ def show_teaching_assist_button(session:requests.Session,
                                 term_id:str,
                                 course_id:str,
                                 WAIT_TIME:float = 2.0):
-    clear_output()
+    #clear_output()
     # Create a button
     button = Button(description=f"Check/Help with question Q{qnum}!", button_style='info', layout=Layout(width='auto'))
     # Attach the function to the button's click event
@@ -451,7 +451,7 @@ def show_teaching_assist_button(session:requests.Session,
     display(button)
 
 def show_submit_eval_button(session:requests.Session,AI_TA_URL:str, user_name:str, user_email:str, course_id: str=None, notebook_id: str=None, rubric_link:str=None, WAIT_TIME:float = 2.0):
-    clear_output()
+    #clear_output()
     # Create a button
     button = Button(description=f"Submit my notebook!", button_style='info', layout=Layout(width='auto'))
     # Attach the function to the button's click event
@@ -490,7 +490,7 @@ def show_clear_output_button():
 
     Useful to call before ask_assist() or submit_eval() if you have large cell outputs.
     """
-    clear_output()
+    #clear_output()
     # Create a button
     button = Button(description="Clear Output", button_style='warning', layout=Layout(width='auto'))
     # Attach the function to the button's click event
