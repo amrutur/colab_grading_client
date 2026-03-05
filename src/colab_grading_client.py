@@ -160,18 +160,56 @@ def get_notebook(max_retries:int = 5, retry_delay:float = 0.5):
   print("Error: Could not access the notebook. Please ensure the notebook is fully loaded and try again.")
   print("If you have large cell outputs (3D visualizations, large plots), try clearing them first.")
   return None
+def split_the_answer(inp):
+  '''
+  split the answer into answer components, along with the percentages
+  Each component is preceded by hashnumberpercent followed by the answer component text. If there are no components, the entire answer is considered as one component with 100 percent.
+
+  return a list of json with 'percent':percent, 'component':component string
+  '''
+
+  spat = r'\s*\#\s*(\d+)[\.\s\%]\s*'
+  ans_comp=re.split(spat,inp)
+
+  answer_parts=[]
+  if (len(ans_comp) == 1):
+    answer_parts.append({'percent':100,'component':ans_comp[0]})
+    return answer_parts
+
+  if (len(ans_comp[1:]) %2 != 0):
+    print('ERROR: Missing answer components')
+    return None
+
+  i=1
+  fraction_till_now = 0.0
+  while i <len(ans_comp[1:]):
+    k = ans_comp[i]
+    if (re.match(r'\d+',k)):
+      fraction_till_now += int(k)
+      answer_parts.append({'percent':int(k),'component':ans_comp[i+1]})
+      i +=2
+    else:
+      print("ERROR: Missing marks percent")
+      return None
+
+  if fraction_till_now != 100.0:
+    print('ERROR: percents dont add up to 100')
+    return None
+
+  return answer_parts
 
 def parse_notebook(nb):
   '''
     Extract the questions cells, the answer cells, their output and the context cells
     (everything other than the question and answer cells)
     The context is auto-regressive (context for each question is all cells
-    from beginnig till the question cell)
+    from beginning till the question cell)
 
     Assumes the following structure for the notebook
     0 or more context cells (cell_type is code or markdown)
     1 or more question cells. has pattern starstarQ<qnum>:marks (cell_type is code or markdown)
     1 or more answer cells. has pattern hashhashAns either in code or markdowncell
+    The rubric answer might have components indicating fractional marks in percentage as hashinteerpercentage followed by the answer component.
     The answer cell might have one or more answer cells following it. 
     NOTE: The  output of only the last code based answer cell is captured. 
     1 chat cell. has pattern starstarChat ...
@@ -282,6 +320,14 @@ def parse_notebook(nb):
       state = CONTEXT
       context = ""
 
+  for k in nb_answers:
+    splt = split_the_answer(nb_answers[k])
+    if splt is None:
+      print(f"ERROR: Check answer for question number: {k}")
+      return None
+    else:
+      nb_answers[k]=splt
+
   return nb_contexts, nb_questions, nb_answers, nb_outputs, nb_tachat, max_marks
 
 def ask_assist(session:requests.Session, 
@@ -322,16 +368,20 @@ def ask_assist(session:requests.Session,
     return
   try:
       print("Please wait, asking the AI TA ...")
-      response = session.post(AI_TA_URL+"assist",json=payload, timeout=WAIT_TIME*60)
-
-      if response.status_code == 200:
-        data = response.json()
-        print("AI TAssistant's response is: \n")
-        display(Markdown(data['response']))
-      else:
-        print(f"Call to AI TAssistant failed with status code: {response.status_code}")
-        print("Error message:", response.text)
-
+      resp = session.post(AI_TA_URL+"assist",json=payload, timeout=WAIT_TIME*60, stream=True)
+      if resp.status_code != 200:
+        print(f"Error: {resp.status_code} - {resp.text}")
+        return
+      for line in resp.iter_lines():
+        if not line:
+          continue
+        msg = json.loads(line)
+        if msg["type"] == "progress":
+          print(msg["message"])
+        elif msg["type"] == "response":
+          display(Markdown(msg["response"]))
+        elif msg["type"] == "error":
+          raise Exception(msg["detail"])
   except requests.exceptions.Timeout:
     print(f"The AI TAssistant is taking too long. Please retry after some time.")
   except requests.exceptions.RequestException as e:
