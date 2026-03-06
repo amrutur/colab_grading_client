@@ -390,9 +390,9 @@ def ask_assist(session:requests.Session,
 def submit_eval(session:requests.Session, 
                 AI_TA_URL:str, 
                 notebook_id: str,
-                course_id: str, 
+                institution_id: str, 
                 term_id: str,
-                institution_id:str,
+                course_id: str,
                 WAIT_TIME:float = 2.0):
 
   '''
@@ -421,6 +421,8 @@ def submit_eval(session:requests.Session,
     print("ERROR: AI-TA URL is None")
     return
   try:
+      print("Please wait, submitting to AI TA ...")
+
       response = session.post(AI_TA_URL+"eval",json=payload, timeout=WAIT_TIME*60)
 
       if response.status_code == 200:
@@ -500,12 +502,17 @@ def show_teaching_assist_button(session:requests.Session,
     # Display the button in the notebook
     display(button)
 
-def show_submit_eval_button(session:requests.Session,AI_TA_URL:str, user_name:str, user_email:str, course_id: str=None, notebook_id: str=None, rubric_link:str=None, WAIT_TIME:float = 2.0):
-    #clear_output()
+def show_submit_eval_button(session:requests.Session, 
+                                AI_TA_URL:str, 
+                                notebook_id:str,
+                                institution_id:str,
+                                term_id:str,
+                                course_id:str,
+                                WAIT_TIME:float = 2.0):
     # Create a button
     button = Button(description=f"Submit my notebook!", button_style='info', layout=Layout(width='auto'))
     # Attach the function to the button's click event
-    button.on_click(lambda b:submit_eval(session,AI_TA_URL, user_name, user_email, course_id, notebook_id, rubric_link, WAIT_TIME))
+    button.on_click(lambda b:submit_eval(session,AI_TA_URL,notebook_id, institution_id, term_id, course_id, WAIT_TIME))
     # Display the button in the notebook
     display(button)
 
