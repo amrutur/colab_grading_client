@@ -226,7 +226,8 @@ def parse_notebook(nb):
 
   #Pattern for marking a question cell with optional question number and marks
   #if qnum is missing - a randome number will be generated,
-  qpat = r"\s*\*\*\s*[qQ]\s*(\d*).*?(?::?\s*?\(?)(\d+\s|\d+\.?\d+)?.*?\n(.*)"
+  #qpat = r"\s*\*\*\s*[qQ]\s*(\d*).*?(?::?\s*?\(?)(\d+\s|\d+\.?\d+)?.*?\n(.*)"
+  qpat = r"\s*\*\*\s*[qQ]\s*(\d+)\s*:?\s*\(?(\d+\.\d|\d+)?.*?\n(.*)"
   #pattern for an answer cell
   apat = r"\s*\#\#\s*[aA]ns.*?\n(.*)"
   #Pattern for marking the beginning of a chat cell
@@ -263,10 +264,10 @@ def parse_notebook(nb):
         print("Error: question {qnum} already exists")
         break 
       if marks is None:
-        marks = 0       
-      max_marks += marks
+        marks = 10  #set default marks to 10 if not specified     
+      max_marks += float(marks)
       #print(f"cell {i} is Question: qnum={qnum} source={cells[i]['source']}")
-      nb_questions[str(qnum)]={'question':cell_content,'marks':marks}
+      nb_questions[str(qnum)]={'question':cell_content,'marks':float(marks)}
       nb_answers[str(qnum)] = ""
       #Capture the context and reset for next chat segment
       nb_contexts[str(qnum)] = context
@@ -376,10 +377,12 @@ def ask_assist(session:requests.Session,
         if not line:
           continue
         msg = json.loads(line)
-        if msg["type"] == "progress":
+        if msg["type"] == "heatbeat":
+          continue #keep alive, ignore
+        elif msg["type"] == "progress":
           print(msg["message"])
         elif msg["type"] == "response":
-          display(Markdown(msg["response"]))
+          display(Markdown(msg["response"])) #final answer
         elif msg["type"] == "error":
           raise Exception(msg["detail"])
   except requests.exceptions.Timeout:
@@ -423,15 +426,24 @@ def submit_eval(session:requests.Session,
   try:
       print("Please wait, submitting to AI TA ...")
 
-      response = session.post(AI_TA_URL+"eval",json=payload, timeout=WAIT_TIME*60)
+      resp = session.post(AI_TA_URL+"eval",json=payload, timeout=WAIT_TIME*60, stream=True)
 
-      if response.status_code == 200:
-        data = response.json()
-        print("AI TAssistant's response is: \n")
-        display(Markdown(data['response']))
-      else:
-        print(f"Call to AI TAssistant failed with status code: {response.status_code}")
-        print("Error message:", response.text)
+      if resp.status_code != 200:
+        print(f"Error: {resp.status_code} - {resp.text}")
+        return
+      for line in resp.iter_lines():
+        if not line:
+          continue
+        msg = json.loads(line)
+        if msg["type"] == "heatbeat":
+          continue #keep alive, ignore
+        elif msg["type"] == "progress":
+          print(msg["message"])
+        elif msg["type"] == "response":
+          display(Markdown(msg["response"]))
+        elif msg["type"] == "error":
+          print(f"Error: {msg['detail']}")
+
 
   except requests.exceptions.Timeout:
     print(f"The AI Teaching assistant is taking too long. Please retry after some time.")
