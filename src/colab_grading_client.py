@@ -114,7 +114,7 @@ def get_cell_output(cell):
       elif 'image/png' in output.get('data',{}):
         cell_output['inline_data'] = {'mime_type':'image/png',\
                                     'data': output["data"]["image/png"]}
-      elif 'image/jpeg' in output('data',{}):
+      elif 'image/jpeg' in output.get('data',{}):
         cell_output['inline_data']={'mime_type':'image/jpeg',\
                                     'data':output["data"]["image/jpeg"]}
     elif output["output_type"] == "display_data":
