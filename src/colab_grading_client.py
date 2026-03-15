@@ -168,7 +168,7 @@ def split_the_answer(inp):
   return a list of json with 'percent':percent, 'component':component string
   '''
 
-  spat = r'\s*\#\s*(\d+)[\.\s\%]\s*'
+  spat = r'\s*\#\#\s*(\d+)\s*\%\s*'
   ans_comp=re.split(spat,inp)
 
   answer_parts=[]
@@ -225,13 +225,13 @@ def parse_notebook(nb):
   max_marks = 0.0
 
   #Pattern for marking a question cell with optional question number and marks
-  #if qnum is missing - a randome number will be generated,
-  #qpat = r"\s*\*\*\s*[qQ]\s*(\d*).*?(?::?\s*?\(?)(\d+\s|\d+\.?\d+)?.*?\n(.*)"
+  #if qnum is missing - a random number will be generated,
   qpat = r"\s*\*\*\s*[qQ]\s*(\d+)\s*:?\s*\(?(\d+\.\d|\d+)?.*?\n(.*)"
   #pattern for an answer cell
-  apat = r"\s*\#\#\s*[aA]ns.*?\n(.*)"
+  apat = r"\#\#\s*[aA]ns"
+  apat1 = r"\s*\#\#\s*[aA]ns.*?\n(.*)"
   #Pattern for marking the beginning of a chat cell
-  chatpat = r"^(\*\*\s*[cC]hat).*\n(.*)"
+  chatpat = r"\*\*\s*[cC]hat.*?(\n.*)"
   #Pattern for m:arking the button enabled cell
   tapat = r"show_teaching_assist_button\("
   #pattern to identify a function definition in a cell
@@ -274,10 +274,14 @@ def parse_notebook(nb):
       context = ""
       state = QUESTION
       continue
-    amatch = re.search(apat, cell_content,re.DOTALL)
+    amatch = re.search(apat, cell_content) #cell with answer pattern
     if amatch: 
       #this an answer cell with one or more answer cells following it
-      cell_content = amatch.group(1) #remove the leading line which has
+      amatch1 = re.search(apat1,cell_content,re.DOTALL)
+      if amatch1:
+        cell_content = amatch1.group(1) #remove the leading line which has
+      else:
+        cell_content = "" #no content in answer cell, just the pattern line
       #print(f"cell {i} is answer cell")
       if state == QUESTION:
         nb_answers[str(qnum)] = cell_content
@@ -349,14 +353,13 @@ def ask_assist(session:requests.Session,
   if nb is None:
     return
   context, questions, answers, outputs, ta_chat, _ = parse_notebook(nb)
-  
   payload = {
     "qnum":qnum,
-    "context": context[str(qnum)],
-    "question": questions[str(qnum)],
-    "answer": answers[str(qnum)],
-    "output": outputs[str(qnum)],
-    "ta_chat":ta_chat[str(qnum)],
+    "context": context.get(str(qnum),''),
+    "question": questions.get(str(qnum),''),
+    "answer": answers.get(str(qnum),''),
+    "output": outputs.get(str(qnum),''),
+    "ta_chat":ta_chat.get(str(qnum),''),
     "notebook_id": notebook_id,
     "institution_id": institution_id,
     "term_id": term_id,
@@ -566,225 +569,3 @@ def show_clear_output_button():
     button.on_click(lambda b: clear_large_outputs())
     # Display the button in the notebook
     display(button)
-
-def get_file_id_from_share_link(share_link: str) -> str or None:
-    """
-    Extracts the file ID from a Google Drive share link.
-
-    Args:
-        share_link: The Google Drive share link.
-
-    Returns:
-        The file ID as a string, or None if the link is invalid.
-    """
-    try:
-        # Split the link by '/'
-        parts = share_link.split('/')
-
-        #print('from get_file_id_from_share_link', parts)
-
-        # Find the index of 'd' or 'drive' which usually precedes the file ID
-        if 'd' in parts:
-            d_index = parts.index('d')
-        elif 'drive' in parts:
-            d_index = parts.index('drive')
-        else:
-            raise IndexError
-
-        # The file ID is usually the next part after 'd'
-        file_id = parts[d_index + 1]
-        subparts = file_id.split('?')
-        file_id = subparts[0]
-        subparts = file_id.split('#')
-        file_id = subparts[0]
-
-
-        return file_id
-    except ValueError:
-        print("Invalid share link format.")
-        return None
-    except IndexError:
-        print("Could not extract file ID from the share link.")
-        return None
-
-def download_colab_notebook(notebook_url):
-    """Download a Colab notebook as JSON"""
-    # Authenticate
-    auth.authenticate_user()
-
-    # Build service
-    drive_service = build('drive', 'v3')
-
-    file_id=get_file_id_from_share_link(notebook_url)
-
-    # Download file
-    request = drive_service.files().get_media(fileId=file_id)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-
-    done = False
-    while not done:
-        status, done = downloader.next_chunk()
-        print(f"Download {int(status.progress() * 100)}%")
-
-    # Parse JSON
-    fh.seek(0)
-    notebook_json = json.loads(fh.read().decode('utf-8'))
-
-    return notebook_json
-
-
-def submit_nb_eval(session:requests.Session, notebook_url, AI_TA_URL, rubric_link, course_id, notebook_id):
-  '''
-  Submit the notebook from the for evaluation to the GRADER.
-  NEEDS TO BE FIXED.
-  '''
-  answer_notebook = download_colab_notebook(notebook_url)
-  if answer_notebook is None:
-    print("Cant access notebook")
-    return False
-
-  user_name, user_email = get_user_info(answer_notebook)
-  answer_hash = calculate_json_md5(answer_notebook)
-
-
-  payload = {
-    "course_id": course_id,
-    "user_name": user_name,
-    "user_email":user_email,
-    "notebook_id": notebook_id,
-    "answer_notebook": answer_notebook,
-    "answer_hash":answer_hash,
-    "rubric_link":rubric_link
-  }
-  #payload_str=json.dumps(payload,indent=4)
-  #print(payload_str)
-  print(f"Length of notebook = {len(json.dumps(payload['answer_notebook'],indent=4))}")
-
-  if AI_TA_URL is None:
-    #display(Markdown(prompt))
-    print("AI_TA_URL is not set")
-    return False
-  try:
-      # Capture the actual request being sent
-      #req = requests.Request('POST', AI_TA_URL, json=payload)
-      #prepared = session.prepare_request(req)
-
-      #print("URL:", prepared.url)
-      #print("Headers:", prepared.headers)
-      #print("Body:", prepared.body)
-
-      #send to server
-      response = session.post(AI_TA_URL+"eval",json=payload)
-
-      if response.status_code == 200:
-        data = response.json()
-        print("Assistant's response is: \n")
-        display(Markdown(data['response']))
-        return True
-      else:
-        print(f"Call to Assistant failed with status code: {response.status_code}")
-        print("Error message:", response.text)
-        return False
-
-  except requests.exceptions.RequestException as e:
-    print(f"An error occurred: {e}")
-    return False
-
-def fetch_graded_response(session:requests.Session, AI_TA_URL, notebook_id, student_id):
-  '''
-  Fetch the graded response from the GRADER
-  '''
-  payload = {
-    "notebook_id": notebook_id,
-    "student_id":student_id,
-    "institution_id": institution_id,
-    "term_id": term_id,
-    "course_id": course_id,
-  }
-
-  if AI_TA_URL is None:
-    #display(Markdown(prompt))
-    print("AI_TA_URL is not set")
-    return False
-  try:
-      response = session.post(AI_TA_URL+"fetch_grader_response",json=payload)
-
-      if response.status_code == 200:
-        data = response.json()
-        print("AI TAssistant's response is: \n")
-        return(data['grader_response'])
-      else:
-        print(f"Call to Assistant failed with status code: {response.status_code}")
-        print("Error message:", response.text)
-        return None
-
-  except requests.exceptions.RequestException as e:
-    print(f"An error occurred: {e}")
-    return None
-
-def fetch_marks_list(session:requests.Session, 
-                     AI_TA_URL, 
-                     institution_id:str, 
-                     term_id:str, 
-                     course_id:str, 
-                     notebook_id: str):
-  '''
-  Fetch the list of students and their marks for notebook_id from the GRADER
-  '''
-  payload = {
-    "institution_id": institution_id,
-    "term_id": term_id,
-    "course_id": course_id,
-    "notebook_id": notebook_id,
-  }
-
-  if AI_TA_URL is None:
-    #display(Markdown(prompt))
-    print("Sorry Teaching Assistant is not available yet. Try again later")
-    return False
-  try:
-      response = session.post(AI_TA_URL+"fetch_marks_list",json=payload)
-
-      if response.status_code == 200:
-        data = response.json()
-        return(data['response'])
-      else:
-        print(f"Call to Assistant failed with status code: {response.status_code}")
-        print("Error message:", response.text)
-        return None
-
-  except requests.exceptions.RequestException as e:
-    print(f"An error occurred: {e}")
-    return None
-
-def notify_student_grades(session:requests.Session, AI_TA_URL, institution_id: str, term_id: str, course_id: str, notebook_id, user_gmail)->bool:
-  '''
-  Send email to the student with the graded answer book
-  '''
-  payload = {
-    "institution_id": institution_id,
-    "term_id": term_id,
-    "course_id": course_id,
-    "notebook_id": notebook_id,
-    "student_id": user_gmail
-  }
-
-  if AI_TA_URL is None:
-    #display(Markdown(prompt))
-    print("AI_TA_URL is empty")
-    return False
-  try:
-      response = session.post(AI_TA_URL+"notify_student_grades",json=payload)
-
-      if response.status_code == 200:
-        print (response.json())
-        return True
-      else:
-        print(f"Call to Assistant failed with status code: {response.status_code}")
-        print("Error message:", response.text)
-        return False
-
-  except requests.exceptions.RequestException as e:
-    print(f"An error occurred: {e}")
-    return False
