@@ -353,13 +353,21 @@ def ask_assist(session:requests.Session,
   if nb is None:
     return
   context, questions, answers, outputs, ta_chat, _ = parse_notebook(nb)
+
+  # Check if qnum exists in the parsed notebook
+  qnum_str = str(qnum)
+  if qnum_str not in questions:
+    print(f"Error: Question {qnum} not found in the notebook.")
+    print("Make sure your question is marked with **Q{qnum}** pattern.")
+    return
+
   payload = {
     "qnum":qnum,
-    "context": context.get(str(qnum),''),
-    "question": questions.get(str(qnum),''),
-    "answer": answers.get(str(qnum),''),
-    "output": outputs.get(str(qnum),''),
-    "ta_chat":ta_chat.get(str(qnum),''),
+    "context": context.get(qnum_str, ""),
+    "question": questions.get(qnum_str, ""),
+    "answer": answers.get(qnum_str, ""),
+    "output": outputs.get(qnum_str, ""),
+    "ta_chat": ta_chat.get(qnum_str, ""),
     "notebook_id": notebook_id,
     "institution_id": institution_id,
     "term_id": term_id,
