@@ -5,7 +5,7 @@
 **colab_grading_client** is a Python client library designed to integrate Google Colab notebooks with AI-powered teaching and grading assistants. It provides client-side functions for students to submit work and receive assistance, and for instructors to manage grading workflows.
 
 - **Repository**: https://github.com/amrutur/colab_grading_client
-- **Version**: 0.1.4
+- **Version**: 1.0.7
 - **License**: MIT
 - **Python**: >=3.7
 - **Author**: Bharadwaj Amrutur (amrutur@gmail.com)
@@ -17,12 +17,13 @@
 ```
 colab_grading_client/
 ├── src/
-│   ├── __init__.py           # Package initialization, exports all functions
+│   ├── __init__.py              # Package initialization, exports all functions
 │   └── colab_grading_client.py  # Main implementation (all functionality)
-├── pyproject.toml            # Package configuration & metadata
-├── README.md                 # Basic project description
-├── LICENSE                   # MIT License
-└── .gitignore                # Standard Python gitignore
+├── pyproject.toml               # Package configuration & metadata
+├── README.md                    # User-facing documentation
+├── CLAUDE.md                    # AI Assistant guide (this file)
+├── LICENSE                      # MIT License
+└── .gitignore                   # Standard Python gitignore
 ```
 
 ### Design Philosophy
@@ -31,85 +32,149 @@ This is a **single-module library** with all functionality in one file (`colab_g
 - Simplicity and ease of use in Colab notebooks
 - Direct REST API communication with grading servers
 - Integration with Google Colab's internal APIs (`google.colab._message`)
-- Google Drive integration for notebook access
+- Streaming responses for real-time feedback
+- Session-based authentication
 
 ## Core Components
 
-### 1. Notebook Cell Extraction Functions
+### 1. Authentication & Session Management
 
-These functions interact with Google Colab's internal API to extract content from notebook cells:
+**`generate_random_string(l:int) -> str`**
+- Generates random alphanumeric string of length `l`
+- Used for creating session identifiers
 
-- **`get_cell_idx(cells, qnum:int)`** - Finds cell index containing question marker `**Q{qnum}**`
-- **`get_question_cell(qnum:int)`** - Extracts question cell content and type
-- **`get_answer_cell(qnum:int)`** - Extracts answer cell (assumes next cell after question)
-- **`get_cells_to_evaluate()`** - Prints all cells for debugging
-- **`form_prompt(q_id:str)`** - Combines question and answer into LLM prompt
+**`authenticate(AI_TA_URL:str) -> requests.Session`**
+- Creates authenticated session with the AI TA server
+- Returns a `requests.Session` object for subsequent API calls
+- IMPORTANT: All API calls (ask_assist, submit_eval) require a session object
 
-**Convention**: Questions are marked with `**Q{number}**` pattern in markdown cells.
+### 2. Notebook Parsing Functions
 
-### 2. Student-Facing Functions
+**`get_cell_output(cell)`**
+- Extracts output from a notebook cell
+- Handles multiple output types (text, images, errors)
+- Returns formatted string representation
 
-Functions that students call from their notebooks:
+**`get_notebook(max_retries:int=5, retry_delay:float=0.5)`**
+- Retrieves current notebook JSON from Colab frontend
+- Uses `_message.blocking_request('get_ipynb', timeout_sec=10)`
+- Implements exponential backoff retry logic
+- Handles timeouts for large notebooks (3D visualizations, etc.)
+- Returns notebook dict or None on failure
 
-- **`login()`** - Displays login interface (HTML response from server)
-- **`ask_assist(GRADER_URL, q_id, rubric_link, WAIT_TIME)`** - Get help on a specific question (WAIT_TIME in minutes, default 2.0)
-- **`check_answer(GRADER_URL, q_id, course_id, notebook_id, rubric_link)`** - DEPRECATED, use `ask_assist`
-- **`submit_eval(GRADER_URL, user_name, user_email, course_id, notebook_id, rubric_link, WAIT_TIME)`** - Submit notebook for grading (WAIT_TIME in minutes, default 2.0)
+**`split_the_answer(inp) -> list`**
+- Splits answer into components with percentage weights
+- Pattern: `##N%` followed by answer component text
+- Returns list of `{'percent': int, 'component': str}` dicts
+- Validates that percentages sum to 100
+- Returns None on validation errors
 
-### 3. Instructor/Admin Functions
+**`parse_notebook(nb) -> tuple`**
+- Main parsing function that extracts structured data from notebook
+- Returns: `(contexts, questions, answers, outputs, ta_chat, max_marks)`
+- All return values are dictionaries keyed by question number (as string)
 
-Functions for managing grading workflows:
+**Patterns used:**
+- **Question**: `**Q{number}** :{marks}` (marks optional, defaults to 10)
+- **Answer**: `##Ans` or `## Ans` (case-insensitive, flexible spacing)
+- **Chat**: `**Chat**` followed by text
+- **TA Button**: `show_teaching_assist_button(` (excluding function definitions)
 
-- **`submit_nb_eval(notebook_url, GRADER_URL, rubric_link, course_id, notebook_id)`** - Submit any notebook by URL for evaluation
-- **`fetch_graded_response(GRADER_URL, notebook_id, user_email)`** - Retrieve graded results
-- **`fetch_student_list(GRADER_URL, notebook_id)`** - Get list of students and grades
-- **`notify_student_grades(GRADER_URL, notebook_id, user_email)`** - Send email notification to student
+**States:**
+- CONTEXT: Accumulating context cells
+- QUESTION: Inside question cells
+- ANSWER: Inside answer cells
+- TABUTTON: Expecting TA button cell
 
-### 4. Google Drive Integration
+### 3. Student-Facing Functions
 
-- **`get_file_id_from_share_link(share_link:str)`** - Extracts file ID from Drive share URLs
-- **`download_colab_notebook(notebook_url)`** - Downloads notebook as JSON using Google Drive API
-- **`get_user_info(nb)`** - Extracts `user_name` and `user_email` from notebook cells
+**`ask_assist(session, AI_TA_URL, qnum, notebook_id, institution_id, term_id, course_id, WAIT_TIME=2.0)`**
+- Get AI help on a specific question
+- Validates question exists before making API call
+- Uses streaming response (`stream=True`) for real-time feedback
+- Handles heartbeat, progress, response, and error message types
+- WAIT_TIME in minutes (default 2.0)
+- Payload includes: context, question, answer, output, ta_chat
 
-**Pattern**: User info is expected in first code cell as:
-```python
-user_name = "Student Name"
-user_email = "student@example.com"
-```
+**`submit_eval(session, AI_TA_URL, notebook_id, institution_id, term_id, course_id, WAIT_TIME=2.0)`**
+- Submit entire notebook for grading
+- Uses streaming response for progress updates
+- WAIT_TIME in minutes (default 2.0)
+- Payload includes: contexts, questions, answers, outputs for all questions
 
-### 5. UI Components (ipywidgets)
+**`upload_rubric(session, AI_TA_URL, notebook_id, institution_id, term_id, course_id)`**
+- Upload grading rubric to the server
+- Parses notebook and extracts questions/answers
+- Used by instructors to set grading criteria
 
-Interactive buttons for Colab notebooks:
+### 4. UI Components (ipywidgets)
 
-- **`show_login_button()`** - Displays login button
-- **`show_teaching_assist_button(GRADER_URL, q_id, rubric_link, WAIT_TIME)`** - Button to get help (WAIT_TIME in minutes, default 2.0)
-- **`show_submit_eval_button(GRADER_URL, user_name, user_email, course_id, notebook_id, rubric_link, WAIT_TIME)`** - Button to submit (WAIT_TIME in minutes, default 2.0)
+**`show_teaching_assist_button(session, AI_TA_URL, qnum, notebook_id, institution_id, term_id, course_id, WAIT_TIME=2.0)`**
+- Displays "Check/Help with question Q{qnum}!" button
+- Button style: 'info' (blue)
+- Calls `ask_assist()` on click
 
-### 6. Utility Functions
+**`show_submit_eval_button(session, AI_TA_URL, notebook_id, institution_id, term_id, course_id, WAIT_TIME=2.0)`**
+- Displays "Submit my notebook!" button
+- Button style: 'info' (blue)
+- Calls `submit_eval()` on click
 
-- **`calculate_json_md5(data:Dict)`** - Deterministic MD5 hash of JSON data
-  - Uses sorted keys, no whitespace for consistency
-  - Used to verify notebook integrity
+**`show_clear_output_button()`**
+- Displays "Clear Output" button
+- Button style: 'warning' (yellow)
+- Calls `clear_large_outputs()` on click
+- Useful before submission when notebook has large outputs
+
+**`clear_large_outputs()`**
+- Clears current cell output
+- Displays markdown instructions for clearing other outputs
+- Warns about large outputs (3D visualizations, plots) that can cause submission failures
 
 ## API Communication
 
 ### REST API Endpoints
 
-The client communicates with a grading server at `GRADER_URL`:
+The client communicates with a grading server at `AI_TA_URL`:
 
-| Endpoint | Method | Purpose | Payload Fields |
-|----------|--------|---------|----------------|
-| `/assist` | POST | Get teaching assistance | `query`, `q_id`, `user_name`, `user_email`, `rubric_link` |
-| `/eval` | POST | Submit for evaluation | `course_id`, `user_name`, `user_email`, `notebook_id`, `answer_notebook`, `answer_hash`, `rubric_link` |
-| `/fetch_grader_response` | POST | Get graded results | `notebook_id`, `user_email` |
-| `/fetch_student_list` | POST | Get student list/grades | `notebook_id` |
-| `/notify_student_grades` | POST | Email student | `notebook_id`, `user_email` |
+| Endpoint | Method | Purpose | Streaming |
+|----------|--------|---------|-----------|
+| `/authenticate` | POST | Create session | No |
+| `/assist` | POST | Get teaching assistance | Yes |
+| `/eval` | POST | Submit for evaluation | Yes |
+| `/upload_rubric` | POST | Upload grading rubric | No |
 
-### Response Handling
+### Streaming Response Format
 
-- Success: Status 200, JSON with `response` field (markdown formatted)
-- Failure: Non-200 status, error message in response text
-- Displays using IPython `display(Markdown())` for rich formatting
+For `/assist` and `/eval` endpoints, responses are streamed as JSON lines:
+
+```json
+{"type": "heartbeat"}
+{"type": "progress", "message": "Processing question 1..."}
+{"type": "response", "response": "## Feedback\n..."}
+{"type": "error", "detail": "Error message"}
+```
+
+### Response Handling Pattern
+
+```python
+resp = session.post(url, json=payload, timeout=WAIT_TIME*60, stream=True)
+if resp.status_code != 200:
+    print(f"Error: {resp.status_code} - {resp.text}")
+    return
+
+for line in resp.iter_lines():
+    if not line:
+        continue
+    msg = json.loads(line)
+    if msg["type"] == "heartbeat":
+        continue  # keep alive
+    elif msg["type"] == "progress":
+        print(msg["message"])
+    elif msg["type"] == "response":
+        display(Markdown(msg["response"]))
+    elif msg["type"] == "error":
+        print(f"Error: {msg['detail']}")
+```
 
 ## Dependencies
 
@@ -117,17 +182,21 @@ The client communicates with a grading server at `GRADER_URL`:
 
 ```python
 # Google Colab specific
-from google.colab import _message  # Internal API for notebook access
-from google.colab import auth      # OAuth authentication
-from googleapiclient.discovery import build  # Google Drive API
+from google.colab import _message, auth
+from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
+import google.auth
+from google.auth.transport.requests import Request
 
 # Standard library
-import requests  # HTTP client
+import requests
 import json
 import re
 import hashlib
 import io
+import time
+import string
+import random
 from typing import Any, Dict
 from urllib.parse import quote
 
@@ -144,55 +213,59 @@ from ipywidgets import Button, Layout
 
 - **Functions**: `snake_case` (Python standard)
 - **Question IDs**: Format `"Q{number}"` or `"q{number}"`
-- **Pattern matching**: Case-insensitive for question IDs
-- **Global variables**: Used for `user_name`, `user_email` (checked with `globals()`)
+- **Pattern matching**: Case-insensitive for question IDs and answer markers
+- **Session management**: All API calls require a `requests.Session` object
 
 ### 2. Error Handling
 
 - Try-except blocks for all network requests
 - Graceful degradation with user-friendly error messages
 - Prints errors to console rather than raising exceptions
-- Timeout handling: `ask_assist` and `submit_eval` include a configurable timeout (WAIT_TIME in minutes, default 2.0) that prevents indefinite hanging
-- Timeout exceptions caught separately with user-friendly message: "The teaching assistant is taking too long. Please retry after some time."
-- User feedback messages displayed before requests: "Please wait, asking the grader..." or "Please wait, submitting to the grader..."
+- Timeout handling: configurable WAIT_TIME (in minutes, default 2.0)
+- Timeout exceptions caught separately with message: "The AI TAssistant is taking too long. Please retry after some time."
+- User feedback messages: "Please wait, asking the AI TA..." or "Please wait, submitting to AI TA..."
 
 ### 3. Display Patterns
 
 - Use `display(Markdown())` for formatted responses
-- Use `display(HTML())` for HTML content
-- Use `print()` for debugging and status messages
-- `clear_output()` before displaying buttons
+- Use `display(HTML())` for HTML content (if needed)
+- Use `print()` for status messages and debugging
+- Buttons do NOT call `clear_output()` before display (commented out)
 
 ### 4. Cell Extraction Patterns
 
-- Questions marked with `**Q{number}**` in markdown
-- Answers assumed to be in the cell immediately following the question
-- Regex pattern: `r"\*\*Q"+f"{qnum}"+"\*\*"`
+- Questions marked with `**Q{number}**` or `**Q{number}** :{marks}` in markdown
+- Answers marked with `##Ans` or `## Ans` (case-insensitive, flexible spacing)
+- Answer components marked with `##N%` where N is the percentage weight
+- Regex pattern for questions: `r"\s*\*\*\s*[qQ]\s*(\d+)\s*:?\s*\(?(\d+\.\d|\d+)?.*?\n(.*)"`
+- Regex pattern for answers: `r"\#\#\s*[aA]ns"`
+- Regex pattern for chat: `r"\*\*\s*[cC]hat.*?(\n.*)"`
+- Regex pattern for TA button: `r"show_teaching_assist_button\("` (must not be in function definition)
 
 ### 5. Security Considerations
 
-- MD5 hashing for notebook integrity verification
-- OAuth for Google Drive access
+- Session-based authentication with server
+- OAuth for Google Drive access (if needed)
 - No client-side credential storage
-- Server-side authentication required
+- Server-side authentication required for all operations
 
 ## Development Workflow
 
 ### Version Management
 
 - Version defined in `pyproject.toml` under `[project]`
-- Current: `0.1.4`
+- Current: `1.0.7`
 - Semantic versioning: MAJOR.MINOR.PATCH
 
 ### Git Workflow
 
-Recent commit pattern shows:
+Commit pattern:
 1. Feature additions (new functions)
-2. Parameter updates
-3. Bug fixes
-4. Version bumps
+2. Bug fixes
+3. Version bumps
+4. Documentation updates
 
-**Commit messages**: Short, descriptive, lowercase
+**Commit messages**: Short, descriptive, clear
 
 ### Build System
 
@@ -204,10 +277,11 @@ Recent commit pattern shows:
 
 ```bash
 # Build distribution
+rm -rf dist/
 python -m build
 
 # Upload to PyPI
-python -m twine upload dist/*
+twine upload --repository pypi dist/*
 ```
 
 ## Common AI Assistant Tasks
@@ -216,62 +290,84 @@ python -m twine upload dist/*
 
 When adding support for a new server endpoint:
 
-1. Define function with clear parameters
-2. Build payload dictionary with required fields
-3. Add optional fields conditionally
-4. Use try-except for requests
-5. Handle 200 vs error responses
-6. Display results using Markdown/HTML
+1. Check if endpoint uses streaming or regular response
+2. Define function with clear parameters including `session` and `AI_TA_URL`
+3. Build payload dictionary with required fields
+4. Add optional fields conditionally
+5. Use try-except for requests
+6. Handle streaming vs regular responses appropriately
+7. Display results using Markdown/print
 
-**Template**:
+**Template for Streaming Endpoint**:
 ```python
-def new_function(GRADER_URL:str, required_param:str, optional_param:str = None):
+def new_function(session:requests.Session, AI_TA_URL:str, required_param:str, WAIT_TIME:float = 2.0):
+    nb = get_notebook()
+    if nb is None:
+        return
+
+    # Parse and validate as needed
+
     payload = {
         "required_param": required_param
     }
-    if optional_param is not None:
-        payload['optional_param'] = optional_param
 
-    if GRADER_URL is None:
-        print("Sorry Teaching Assistant is not available yet")
+    if AI_TA_URL is None:
+        print("AI Teaching Assistant url (AI_TA_URL) is not set")
         return
 
     try:
-        response = requests.post(GRADER_URL+"endpoint", json=payload)
-        if response.status_code == 200:
-            data = response.json()
-            display(Markdown(data['response']))
-        else:
-            print(f"Call failed with status code: {response.status_code}")
-            print("Error message:", response.text)
+        print("Please wait, processing...")
+        resp = session.post(AI_TA_URL+"endpoint", json=payload, timeout=WAIT_TIME*60, stream=True)
+
+        if resp.status_code != 200:
+            print(f"Error: {resp.status_code} - {resp.text}")
+            return
+
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            msg = json.loads(line)
+            if msg["type"] == "heartbeat":
+                continue
+            elif msg["type"] == "progress":
+                print(msg["message"])
+            elif msg["type"] == "response":
+                display(Markdown(msg["response"]))
+            elif msg["type"] == "error":
+                print(f"Error: {msg['detail']}")
+
+    except requests.exceptions.Timeout:
+        print(f"Request is taking too long. Please retry after some time.")
     except requests.exceptions.RequestException as e:
         print(f"An error occurred: {e}")
 ```
 
-### Task 2: Modifying Cell Extraction Logic
+### Task 2: Modifying Notebook Parsing Logic
 
 The cell extraction logic relies on:
-- `google.colab._message.blocking_request('get_ipynb')` for notebook access
-- Regex patterns for identifying questions
-- Index-based navigation (answer = question_index + 1)
+- `google.colab._message.blocking_request('get_ipynb', timeout_sec=10)` for notebook access
+- Regex patterns for identifying questions, answers, chat cells
+- State machine (CONTEXT, QUESTION, ANSWER, TABUTTON) for parsing flow
+- `split_the_answer()` for parsing answer components with weights
 
 When modifying:
-- Update regex in `get_cell_idx()` if question format changes
-- Adjust index offset in `get_answer_cell()` if answer position changes
+- Update regex patterns in `parse_notebook()` if cell format changes
 - Test with various cell structures
+- Ensure state transitions are correct
+- Validate that percentages sum to 100 in answer components
 
 ### Task 3: Updating Button UI
 
 Button creation follows this pattern:
 ```python
-def show_button_name(params):
-    clear_output()  # Clean previous output
+def show_button_name(session:requests.Session, AI_TA_URL:str, params...):
+    # Note: clear_output() is commented out to avoid clearing other outputs
     button = Button(
         description="Button Text",
-        button_style='info',
+        button_style='info',  # or 'warning' for clear button
         layout=Layout(width='auto')
     )
-    button.on_click(lambda b: function_to_call(params))
+    button.on_click(lambda b: function_to_call(session, AI_TA_URL, params...))
     display(button)
 ```
 
@@ -279,32 +375,25 @@ def show_button_name(params):
 
 When releasing a new version:
 1. Update version in `pyproject.toml` line 7
-2. Commit with message like "updated version number"
-3. Build and publish to PyPI
-4. Tag release in git
+2. Update version in README.md and CLAUDE.md
+3. Add entry to CHANGELOG section in README.md
+4. Commit with message like "bump version to X.Y.Z"
+5. Build and publish to PyPI
+6. Tag release in git
 
-### Task 5: Adding Documentation
+### Task 5: Handling Large Notebooks
 
-Currently minimal documentation. When adding:
-- Update `README.md` with usage examples
-- Add docstrings to new functions (currently sparse)
-- Consider adding `docs/` directory for detailed guides
-- Create example notebooks in `examples/`
+Large cell outputs can cause `get_notebook()` to fail. The solution:
+1. `get_notebook()` has 10-second timeout on `blocking_request`
+2. Exponential backoff retry (5 attempts)
+3. Helpful error messages about clearing outputs
+4. `clear_large_outputs()` and `show_clear_output_button()` for users
 
-## Testing Considerations
-
-**Current State**: No test suite present
-
-**Recommended additions**:
-- Unit tests for utility functions (`calculate_json_md5`, `get_file_id_from_share_link`)
-- Mock tests for API functions
-- Integration tests with test server
-- Test fixtures for notebook structures
-
-**Testing challenges**:
-- Colab-specific APIs require mocking `google.colab._message`
-- Google Drive integration requires auth
-- UI components need IPython environment
+Common causes:
+- Open3D 3D visualizations
+- Large matplotlib plots
+- Interactive widgets
+- Large data displays
 
 ## Important Notes for AI Assistants
 
@@ -316,21 +405,21 @@ This library is tightly coupled to Google Colab:
 - Cannot be used in standard Python scripts
 - No local testing without Colab environment
 
-### 2. Deprecated Functions
+### 2. Session Management is Critical
 
-- `check_answer()` at line 176 is marked for deprecation
-- Use `ask_assist()` instead
-- When refactoring, ensure backward compatibility or add warnings
+**BREAKING CHANGE**: All API functions now require a `session` parameter
+- Old: `ask_assist(GRADER_URL, q_id, ...)`
+- New: `ask_assist(session, AI_TA_URL, qnum, ...)`
+- Sessions created via `authenticate(AI_TA_URL)`
+- Sessions maintain state across API calls
 
-### 3. Global Variable Pattern
+### 3. Streaming Responses
 
-Functions check for global variables:
-```python
-if 'user_name' in globals():
-    payload['user_name'] = user_name
-```
-
-This is intentional for Colab notebook context but should be documented as a code smell for standard Python.
+API endpoints use streaming responses for real-time feedback:
+- Set `stream=True` in requests
+- Use `resp.iter_lines()` to process line by line
+- Handle JSON message types: heartbeat, progress, response, error
+- Display progress messages as they arrive
 
 ### 4. Error Handling Philosophy
 
@@ -339,41 +428,53 @@ This is intentional for Colab notebook context but should be documented as a cod
 - Graceful degradation when server unavailable
 - Print, don't crash
 
-### 5. Payload Construction
+### 5. Question Number Validation
 
-All API calls follow pattern:
-1. Build dictionary with required fields
-2. Conditionally add optional fields
-3. Check if GRADER_URL exists
-4. POST with `json=payload` (not `data=`)
-5. Parse JSON response on success
+`ask_assist()` validates question existence before API call:
+```python
+qnum_str = str(qnum)
+if qnum_str not in questions:
+    print(f"Error: Question {qnum} not found in the notebook.")
+    print("Make sure your question is marked with **Q{qnum}** pattern.")
+    return
+```
 
-### 6. Display Conventions
+Use `.get()` for safe dictionary access:
+```python
+payload = {
+    "context": context.get(qnum_str, ""),
+    "question": questions.get(qnum_str, ""),
+    ...
+}
+```
 
-- Markdown for formatted text (grading feedback, responses)
-- HTML for interactive content (login pages)
-- Print for status/debugging
-- Clear output before showing new buttons
+### 6. Answer Components
 
-## Future Considerations
+Answers can have weighted components:
+```markdown
+## Ans
+##50%
+This is the first part worth 50%
+##50%
+This is the second part worth 50%
+```
 
-### Potential Improvements
+`split_the_answer()` validates and parses these, returning structured data.
 
-1. **Type Hints**: Add complete type annotations
-2. **Testing**: Comprehensive test suite
-3. **Documentation**: Detailed API docs and examples
-4. **Configuration**: Config file support instead of passing GRADER_URL
-5. **Async**: Consider async/await for API calls
-6. **Validation**: Input validation for parameters
-7. **Logging**: Structured logging instead of print statements
-8. **Error Classes**: Custom exceptions for different error types
+## Testing Considerations
 
-### Architecture Evolution
+**Current State**: No test suite present
 
-- Consider splitting into multiple modules as complexity grows
-- Separate concerns: API client, UI, notebook utilities
-- Add abstract base classes for extensibility
-- Plugin system for custom grading rubrics
+**Recommended additions**:
+- Unit tests for utility functions (`split_the_answer`, `generate_random_string`)
+- Mock tests for API functions (mock `requests.Session`)
+- Integration tests with test server
+- Test fixtures for various notebook structures
+
+**Testing challenges**:
+- Colab-specific APIs require mocking `google.colab._message`
+- Streaming responses need mock line iterators
+- UI components need IPython environment
 
 ## Quick Reference
 
@@ -381,22 +482,56 @@ All API calls follow pattern:
 - Main code: `src/colab_grading_client.py`
 - Package config: `pyproject.toml`
 - Exports: `src/__init__.py`
+- User docs: `README.md`
+- AI guide: `CLAUDE.md` (this file)
 
-### Key Line Numbers
-- Cell extraction: Lines 71-104
-- Prompt formation: Lines 106-124
-- Student functions: Lines 126-206
-- Submission: Lines 208-242
-- Buttons: Lines 245-275
-- Drive integration: Lines 277-342
-- User info extraction: Lines 344-368
-- Admin functions: Lines 370-511
+### Current Functions (v1.0.7)
+
+**Authentication:**
+- `generate_random_string(l)`
+- `authenticate(AI_TA_URL)`
+
+**Notebook Parsing:**
+- `get_cell_output(cell)`
+- `get_notebook(max_retries, retry_delay)`
+- `split_the_answer(inp)`
+- `parse_notebook(nb)`
+
+**Student Functions:**
+- `ask_assist(session, AI_TA_URL, qnum, notebook_id, institution_id, term_id, course_id, WAIT_TIME)`
+- `submit_eval(session, AI_TA_URL, notebook_id, institution_id, term_id, course_id, WAIT_TIME)`
+
+**Instructor Functions:**
+- `upload_rubric(session, AI_TA_URL, notebook_id, institution_id, term_id, course_id)`
+
+**UI Components:**
+- `show_teaching_assist_button(session, AI_TA_URL, qnum, notebook_id, institution_id, term_id, course_id, WAIT_TIME)`
+- `show_submit_eval_button(session, AI_TA_URL, notebook_id, institution_id, term_id, course_id, WAIT_TIME)`
+- `clear_large_outputs()`
+- `show_clear_output_button()`
 
 ### Common Patterns
-- API calls: Try-except with status checking
-- Notebook access: `_message.blocking_request('get_ipynb')`
-- Question format: `**Q{number}**`
-- User info: First code cell with `user_name` and `user_email`
+- API calls: Try-except with status checking, streaming support
+- Notebook access: `_message.blocking_request('get_ipynb', timeout_sec=10)`
+- Question format: `**Q{number}**` or `**Q{number}** :{marks}`
+- Answer format: `##Ans` (flexible spacing, case-insensitive)
+- Answer components: `##N%` where N is percentage
+- Session requirement: All API calls need authenticated session
+
+### Parameter Changes (Important!)
+
+**Old API (deprecated):**
+- `ask_assist(GRADER_URL, q_id, rubric_link, WAIT_TIME)`
+
+**New API (current):**
+- `ask_assist(session, AI_TA_URL, qnum, notebook_id, institution_id, term_id, course_id, WAIT_TIME)`
+
+Key changes:
+- Added `session` as first parameter
+- Changed `GRADER_URL` to `AI_TA_URL`
+- Changed `q_id` to `qnum` (integer, not string)
+- Removed `rubric_link` parameter
+- Added `notebook_id`, `institution_id`, `term_id`, `course_id` parameters
 
 ## Current Development Branch
 
@@ -410,6 +545,6 @@ When making changes:
 
 ---
 
-**Last Updated**: 2025-11-26
-**Based on Version**: 0.1.4
+**Last Updated**: 2026-03-15
+**Based on Version**: 1.0.7
 **For AI Assistants**: Follow these guidelines when analyzing or modifying this codebase
